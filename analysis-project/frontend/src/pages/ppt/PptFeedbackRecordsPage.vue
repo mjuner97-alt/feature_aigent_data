@@ -115,7 +115,6 @@ const recipients = computed(() => {
         .filter(page => page.recipient === null && page.configurableTitle)
         .map(page => page.configurableTitle!))],
       notifiedAt: latest(group.pages.map(page => page.notifiedAt)),
-      feedbackAt: latest(group.pages.map(page => page.feedbackAt)),
     };
   }).sort((a, b) => {
     const first = a.notifiedAt ?? '';
@@ -173,9 +172,9 @@ function openVersionAssignments(row: Page) {
   };
 }
 
-function closeVersionAssignments() {
+function closeVersionAssignments(changed: boolean) {
   versionAssignments.value = undefined;
-  void load();
+  if (changed) void load();
 }
 
 /** 读取反馈记录并构建批次、版本及接收人的汇总展示。 */
@@ -221,10 +220,7 @@ onMounted(load);
       @expand-change="loadOriginalTitles">
       <el-table-column type="expand">
         <template #default="{ row }">
-          <p v-if="row.detailPages.length && !originalTitles.has(row.versionId)" class="page-details-loading" role="status">
-            正在加载反馈明细…
-          </p>
-          <el-table v-else class="page-details" :data="row.detailPages" size="small" empty-text="暂无反馈任务">
+          <el-table class="page-details" :data="row.detailPages" row-key="findingId" size="small" empty-text="暂无反馈任务">
             <el-table-column label="页面" min-width="180">
               <template #default="{ row: item }">
                 P{{ item.pageNo }} · {{ feedbackPageTitle(originalTitles.get(row.versionId)?.[item.pageNo], item.title) }}
@@ -267,9 +263,6 @@ onMounted(load);
       <el-table-column label="反馈进度" width="125">
         <template #default="{ row }">{{ row.completed }}/{{ row.total }}</template>
       </el-table-column>
-      <el-table-column label="反馈时间" min-width="135">
-        <template #default="{ row }">{{ date(row.feedbackAt) }}</template>
-      </el-table-column>
       <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <div class="record-actions">
@@ -281,7 +274,7 @@ onMounted(load);
     <el-pagination v-if="filtered.length > pageSize" v-model:current-page="pageNumber"
       :page-size="pageSize" :total="filtered.length" layout="prev, pager, next" />
     <el-dialog :model-value="!!emptyVersion" title="版本反馈详情" width="min(480px, 94vw)"
-      @update:model-value="open => { if (!open) emptyVersion = undefined }">
+      @update:model-value="(open: boolean) => { if (!open) emptyVersion = undefined }">
       <template v-if="emptyVersion">
         <p>{{ emptyVersion.batchName }} · v{{ emptyVersion.versionNo }}</p>
         <p>{{ emptyVersion.fileName }}</p>
@@ -299,7 +292,6 @@ onMounted(load);
 h2 { margin: 0; color: #142441; font-size: 24px; }
 .records-filters { --ppt-filter-width: 156px; margin-bottom: 12px; }
 .page-details { padding-inline: 12px; box-sizing: border-box; }
-.page-details-loading { margin: 0; padding: 12px; color: var(--el-text-color-secondary); }
 .record-actions { display: flex; align-items: center; gap: 16px; flex-wrap: nowrap; white-space: nowrap; }
 .record-actions :deep(.el-button) { margin-left: 0; flex-shrink: 0; }
 .el-pagination { margin-top: 12px; justify-content: flex-end; }

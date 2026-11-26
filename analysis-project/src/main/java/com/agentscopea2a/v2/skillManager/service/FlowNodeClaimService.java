@@ -113,7 +113,7 @@ public class FlowNodeClaimService {
         // transaction closes the window where the UI can show QUEUED while
         // one or more nodes are already RUNNING (and also covers a worker
         // crash immediately after claim).
-        if (execution.getStatus() == FlowExecutionStatus.QUEUED) {
+        if (execution.getStatus() == FlowExecutionStatus.QUEUED || execution.getStartedAt() == null) {
             execution.setStatus(FlowExecutionStatus.RUNNING);
             if (execution.getStartedAt() == null) execution.setStartedAt(now);
             mapper.updateExecution(execution);

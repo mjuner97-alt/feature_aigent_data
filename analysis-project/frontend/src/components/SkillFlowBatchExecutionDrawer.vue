@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { InfoFilled } from '@element-plus/icons-vue';
 import {
+  cancelSkillFlowBatchExecutions,
   listSkillFlowBatchExecutions,
   type BatchNotificationSelection,
 } from '../api/skillFlow';
@@ -29,6 +30,8 @@ const userNames = ref<Record<string, string>>({});
 const loading = ref(false);
 const error = ref('');
 const selected = ref<Set<number>>(new Set());
+const selectedForCancellation = ref<Set<number>>(new Set());
+const cancelling = ref(false);
 const previewOpen = ref(false);
 const notificationOpen = ref(false);
 const notificationId = ref<number | null>(null);
@@ -61,6 +64,15 @@ const filteredRows = computed(() => {
     ? rows.value.filter((row) => row.flowName.toLocaleLowerCase('zh-CN').includes(keyword))
     : rows.value;
 });
+function canCancel(row: SkillFlowExecution) {
+  return row.triggerUserId === currentUserId() && ['WAITING_METRICS', 'QUEUED', 'RUNNING'].includes(row.status);
+}
+const cancellableRows = computed(() => rows.value.filter(canCancel));
+const filteredCancellable = computed(() => filteredRows.value.filter(canCancel));
+const filteredCancelSelectionCount = computed(() => filteredCancellable.value.filter(row => selectedForCancellation.value.has(row.id)).length);
+const allCancellableSelected = computed(() => !!filteredCancellable.value.length && filteredCancelSelectionCount.value === filteredCancellable.value.length);
+const showCancellation = computed(() => cancellableRows.value.length > 0 || selectedForCancellation.value.size > 0);
+
 const pageRows = computed(() => {
   const start = (page.value - 1) * pageSize.value;
   return filteredRows.value.slice(start, start + pageSize.value);
@@ -86,6 +98,7 @@ async function load(silent = false) {
   const current = ++generation;
   if (!silent) {
     selected.value = new Set();
+    selectedForCancellation.value = new Set();
     reportKeyword.value = '';
     page.value = 1;
     rows.value = [];
@@ -157,7 +170,7 @@ function triggerPerson(row: SkillFlowExecution) {
     : name || row.triggerUserId || '-';
 }
 function statusText(status: string) {
-  return ({ WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中', SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已取消', CANCEL_REQUESTED: '取消中' } as Record<string, string>)[status] || status;
+  return ({ WAITING_METRICS: '排队中', QUEUED: '排队中', RUNNING: '执行中', SUMMARIZING: '汇总中', SUCCESS: '成功', PARTIAL_SUCCESS: '部分成功', FAILED: '失败', CANCELLED: '已终止', CANCEL_REQUESTED: '终止中' } as Record<string, string>)[status] || status;
 }
 function statusClass(status: string) {
   return ({ WAITING_METRICS: 'st-pending', QUEUED: 'st-pending', RUNNING: 'st-running', SUMMARIZING: 'st-pending', SUCCESS: 'st-success', PARTIAL_SUCCESS: 'st-success', FAILED: 'st-failed', CANCELLED: 'st-off', CANCEL_REQUESTED: 'st-pending' } as Record<string, string>)[status] || '';
@@ -170,6 +183,49 @@ function showDetail(row: SkillFlowExecution) {
   detailId.value = row.id;
   detailOpen.value = true;
 }
+function toggleCancellation(rowsToToggle: SkillFlowExecution[], checked: boolean) {
+  const next = new Set(selectedForCancellation.value);
+  for (const row of rowsToToggle) {
+    if (checked) next.add(row.id);
+    else next.delete(row.id);
+  }
+  selectedForCancellation.value = next;
+}
+
+async function cancelReports(all: boolean) {
+  const { flowId, batchId } = props;
+  const executionIds = all ? [] : [...selectedForCancellation.value];
+  const count = all ? cancellableRows.value.length : executionIds.length;
+  if (!flowId || !batchId || !count || cancelling.value) return;
+
+  cancelling.value = true;
+  try {
+    const title = all ? '终止本批次' : '终止所选';
+    try {
+      await ElMessageBox.confirm(
+        `确定${title}吗？当前有 ${count} 份报告待处理。正在执行的节点结束后将丢弃结果，后续节点停止执行。`,
+        title,
+        { confirmButtonText: '终止', cancelButtonText: '返回', type: 'warning' },
+      );
+    } catch {
+      return;
+    }
+    if (flowId !== props.flowId || batchId !== props.batchId) return;
+
+    const result = await cancelSkillFlowBatchExecutions(flowId, batchId, all, executionIds);
+    ElMessage.info(`已终止 ${result.cancelled} 份，终止中 ${result.cancelling} 份，跳过 ${result.skipped} 份`);
+    if (flowId === props.flowId && batchId === props.batchId) {
+      selectedForCancellation.value = new Set();
+      emit('changed');
+      await load(true);
+    }
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '终止团队报告失败');
+  } finally {
+    cancelling.value = false;
+  }
+}
+
 async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: number[] }) {
   if (result.failedExecutionIds.length) ElMessage.warning(`成功 ${result.sentExecutionIds.length} 份，失败 ${result.failedExecutionIds.length} 份`);
   else ElMessage.success(`已提交 ${result.sentExecutionIds.length} 份报告通知`);
@@ -191,6 +247,10 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
           <div class="batch-actions">
             <button type="button" class="btn-action" :disabled="!selected.size" @click="selected = new Set()">清空</button>
             <button type="button" class="btn-action primary" :disabled="!selected.size" @click="previewOpen = true">批量通知（{{ selected.size }}）</button>
+            <template v-if="showCancellation">
+              <button type="button" class="btn-action danger" :disabled="cancelling || !selectedForCancellation.size" @click="cancelReports(false)">终止所选（{{ selectedForCancellation.size }}）</button>
+              <button type="button" class="btn-action danger" :disabled="cancelling || !cancellableRows.length" @click="cancelReports(true)">终止本批次</button>
+            </template>
           </div>
         </div>
         <main>
@@ -202,6 +262,9 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
             <table class="job-table execution-table">
               <thead><tr>
                 <th class="check-column"><input type="checkbox" aria-label="全选筛选结果中的可发送团队报告" :checked="allSelected" :indeterminate.prop="partlySelected" :disabled="!filteredEligible.length" @change="toggleAll" /></th>
+                <th v-if="showCancellation" class="cancel-check-column">
+                  <label><input type="checkbox" aria-label="选中筛选结果中的可终止报告" :checked="allCancellableSelected" :indeterminate.prop="filteredCancelSelectionCount > 0 && !allCancellableSelected" :disabled="cancelling || !filteredCancellable.length" @change="toggleCancellation(filteredCancellable, ($event.target as HTMLInputElement).checked)" />终止</label>
+                </th>
                 <th>报告名称</th><th>类型</th><th>状态</th><th>触发方式</th><th>进度</th><th>触发人</th><th>创建时间</th>
                 <th><span class="th-with-info">累计节点耗时<el-tooltip placement="top" effect="dark" :content="nodeDurationHelp"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th>
                 <th><span class="th-with-info">总历时<el-tooltip placement="top" effect="dark" :content="elapsedDurationHelp"><el-icon class="th-info-icon"><InfoFilled /></el-icon></el-tooltip></span></th>
@@ -209,6 +272,9 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
               </tr></thead>
               <tbody><tr v-for="row in pageRows" :key="row.id">
                 <td class="check-column"><input v-if="selectable(row)" type="checkbox" :checked="selected.has(row.id)" :aria-label="`选择 ${row.flowName}`" @change="toggle(row)" /></td>
+                <td v-if="showCancellation" class="cancel-check-column">
+                  <input v-if="canCancel(row) || selectedForCancellation.has(row.id)" type="checkbox" :checked="selectedForCancellation.has(row.id)" :aria-label="`选择终止 ${row.flowName}`" :disabled="cancelling" @change="toggleCancellation([row], ($event.target as HTMLInputElement).checked)" />
+                </td>
                 <td><span class="col-name">{{ row.flowName }}</span><span class="col-time">#{{ row.id }}</span></td>
                 <td>团队报告</td>
                 <td><span class="status-badge" :class="statusClass(row.status)">{{ statusText(row.status) }}</span></td>
@@ -244,7 +310,7 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
 .batch-toolbar input{width:min(320px,100%);padding:8px 11px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#1e293b;font:inherit;outline:none}
 .batch-toolbar input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgb(59 130 246 / 12%)}
 .col-actions a{text-decoration:none}
-.batch-actions{display:flex;flex:none;gap:8px}
+.batch-actions{display:flex;flex-wrap:wrap;gap:8px}
 .batch-page main{flex:1;min-height:0;overflow:auto;padding:0 24px 20px}
 .batch-page footer{display:flex;justify-content:flex-end;min-height:32px;padding:0 24px 18px}
 .state{padding:60px 0;border-radius:8px;background:#fff;color:#94a3b8;text-align:center}.state.error{color:#b91c1c}
@@ -254,12 +320,15 @@ async function sent(result: { sentExecutionIds: number[]; failedExecutionIds: nu
 .job-table td{padding:10px 12px;border-bottom:1px solid #f1f5f9;color:#1e293b;font-size:13px}
 .job-table tr:hover td{background:#f8fafc}
 .check-column{width:28px;text-align:center!important}
+.cancel-check-column{width:64px;text-align:center!important;white-space:nowrap}
+.cancel-check-column label{display:inline-flex;align-items:center;gap:4px}
 .col-name{display:block;font-weight:600}.col-time{display:block;color:#94a3b8;font-size:12px;white-space:nowrap}
 .col-owner{max-width:180px;overflow:hidden;color:#64748b;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .col-actions{display:flex;align-items:center;gap:4px;white-space:nowrap}
 .status-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;white-space:nowrap}
 .st-running,.st-success{background:#dcfce7;color:#166534}.st-pending{background:#fef3c7;color:#a16207}.st-failed{background:#fee2e2;color:#991b1b}.st-off{background:#f1f5f9;color:#64748b}
 .btn-action{padding:4px 10px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;color:#475569;cursor:pointer;font-size:12px}.btn-action:hover{background:#f1f5f9}.btn-action:disabled{cursor:default;opacity:.45}
+.btn-action.danger{border-color:#fca5a5;color:#b91c1c}.btn-action.danger:hover{background:#fef2f2}
 .btn-action.primary{border-color:#3b82f6;background:#3b82f6;color:#fff}.btn-action.primary:hover{background:#2563eb}.btn-action.primary:disabled{background:#3b82f6}
 .th-with-info{display:inline-flex;align-items:center;gap:2px}.th-info-icon{color:#94a3b8;cursor:help;font-size:14px}
 @media(max-width:700px){.batch-header{align-items:flex-start;padding-right:16px;padding-left:16px;flex-direction:column}.batch-heading p{max-width:100%}.batch-page main{padding-right:12px;padding-left:12px}.batch-toolbar{align-items:stretch;padding-right:12px;padding-left:12px;flex-direction:column}.batch-toolbar input{width:100%}.batch-actions{justify-content:flex-end}}

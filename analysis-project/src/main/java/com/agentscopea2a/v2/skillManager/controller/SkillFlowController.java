@@ -360,6 +360,16 @@ public class SkillFlowController {
         return queryService.batch(flowId, batchId, userId);
     }
 
+    public record BatchCancelRequest(Long flowId, String batchId, boolean all, List<Long> executionIds) {}
+
+    @PostMapping("/api/skill-flow-executions/batch/cancel")
+    public FlowExecutionService.BatchCancelResult cancelBatch(
+        @RequestBody BatchCancelRequest request,
+        @RequestHeader(name = "X-User-Id") String userId
+    ) {
+        return executionService.cancelTeamBatch(request.flowId(), request.batchId(), userId, request.all(), request.executionIds());
+    }
+
     /** 执行详情(含汇总结果与报告路径)。 */
     @GetMapping("/api/skill-flow-executions/{id}")
     public FlowQueryService.ExecutionDto getExecution(

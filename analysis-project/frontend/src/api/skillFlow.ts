@@ -253,6 +253,21 @@ export async function listSkillFlowExecutions(
   };
 }
 
+export async function cancelSkillFlowBatchExecutions(
+  flowId: number,
+  batchId: string,
+  all: boolean,
+  executionIds: number[],
+): Promise<{ cancelled: number; cancelling: number; skipped: number }> {
+  const res = await fetch(`${EXECUTION_BASE}/batch/cancel`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ flowId, batchId, all, executionIds }),
+  });
+  if (!res.ok) throw await requestError(res, '终止团队报告失败');
+  return res.json();
+}
+
 export async function listSkillFlowBatchExecutions(flowId: number, batchId: string): Promise<SkillFlowExecution[]> {
   const qs = new URLSearchParams({ flowId: String(flowId), batchId });
   const res = await fetch(`${EXECUTION_BASE}/batch?${qs}`, { headers: authHeaders() });

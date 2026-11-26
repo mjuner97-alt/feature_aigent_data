@@ -835,7 +835,10 @@ public class FlowExecutionService {
         // 广播式重算:不区分该指标被谁依赖,统一让所有等待中的执行各自复查一遍(简单且不会漏)
         for (SkillFlowExecution execution : mapper.selectWaitingExecutions(schedulerGuard.isAllowed())) {
             if (!dataDate.equals(execution.getDataDate())) continue; // 数据日期不同,与本次就绪无关
-            recomputeGate(execution);
+            SkillFlowExecution current = mapper.selectFlowExecutionForUpdate(execution.getId());
+            if (current != null && current.getStatus() == FlowExecutionStatus.WAITING_METRICS) {
+                recomputeGate(current);
+            }
         }
     }
 
@@ -923,34 +926,11 @@ public class FlowExecutionService {
         if (candidate != null && candidate.getBatchId() != null) {
             teamReports.lock(candidate.getFlowId());
             candidate = mapper.selectFlowExecutionForUpdate(executionId);
-            if (candidate.getStatus().terminal()) throw new IllegalStateException("执行已结束,无法取消");
-            if (candidate.getStatus() == FlowExecutionStatus.SUMMARIZING) throw new IllegalStateException(
-                "汇总中无法取消"
-            );
-            LocalDateTime now = LocalDateTime.now(clock);
-            boolean live = mapper
-                .selectNodeExecutions(executionId)
-                .stream()
-                .anyMatch(
-                    n ->
-                        n.getStatus() == FlowNodeExecutionStatus.RUNNING &&
-                        n.getLeaseExpiresAt() != null &&
-                        n.getLeaseExpiresAt().isAfter(now)
-                );
-            candidate.setCancelRequestedAt(now);
-            candidate.setStatus(live ? FlowExecutionStatus.CANCEL_REQUESTED : FlowExecutionStatus.CANCELLED);
-            if (!live) {
-                candidate.setActiveGuardKey(null);
-                candidate.setCompletedAt(now);
+            if (!canCancelBatchExecution(candidate)) throw new IllegalStateException("当前状态无法终止");
+            cancelBatchExecution(candidate, LocalDateTime.now(clock));
+            if (candidate.getStatus() == FlowExecutionStatus.CANCELLED) {
+                events.publishEvent(new FlowQueuedEvent(candidate.getId()));
             }
-            mapper.updateExecution(candidate);
-            for (var n : mapper.selectNodeExecutions(executionId))
-                if (!n.getStatus().terminal() && (!live || n.getStatus() != FlowNodeExecutionStatus.RUNNING)) {
-                    n.setStatus(FlowNodeExecutionStatus.CANCELLED);
-                    n.setCompletedAt(now);
-                    mapper.updateNodeExecution(n);
-                }
-            if (!live) events.publishEvent(new FlowQueuedEvent(candidate.getId()));
             return candidate;
         }
         // 锁定流程行,串行化同一执行上的取消/重跑等状态修改(与 FlowCoordinator.retryNode 同款)
@@ -975,6 +955,69 @@ public class FlowExecutionService {
             }
         }
         return execution;
+    }
+
+    public record BatchCancelResult(int cancelled, int cancelling, int skipped) {}
+
+    @Transactional("gaussCustomerTransactionManager")
+    public BatchCancelResult cancelTeamBatch(Long flowId, String batchId, String userId, boolean all, List<Long> executionIds) {
+        if (flowId == null || batchId == null || batchId.isBlank() ||
+            (all ? executionIds != null && !executionIds.isEmpty() : executionIds == null || executionIds.isEmpty())) {
+            throw new IllegalArgumentException("请选择要终止的团队报告执行");
+        }
+        Set<Long> selectedIds = executionIds == null ? Set.of() : new LinkedHashSet<>(executionIds);
+        teamReports.lock(flowId);
+        List<SkillFlowExecution> batch = mapper.selectObjectBatchForUpdate(flowId, batchId);
+        if (batch.isEmpty() || batch.stream().anyMatch(e -> !"团队报告".equals(FlowReportNaming.value(e, "report_type")))) {
+            throw new IllegalArgumentException("团队报告批次不存在");
+        }
+        if (batch.stream().anyMatch(e -> !Objects.equals(userId, e.getTriggerUserId()))) {
+            throw new IllegalStateException("FlowAccessDenied: 仅本次执行触发人可批量终止");
+        }
+        List<SkillFlowExecution> targets = all ? batch : batch.stream().filter(e -> selectedIds.contains(e.getId())).toList();
+        if (!all && targets.size() != selectedIds.size()) throw new IllegalArgumentException("所选执行不属于当前批次");
+
+        int cancelled = 0;
+        int cancelling = 0;
+        Long wakeupExecutionId = null;
+        LocalDateTime now = LocalDateTime.now(clock);
+        for (SkillFlowExecution target : targets) {
+            if (!canCancelBatchExecution(target)) continue;
+            cancelBatchExecution(target, now);
+            if (target.getStatus() == FlowExecutionStatus.CANCEL_REQUESTED) {
+                cancelling++;
+            } else {
+                cancelled++;
+                wakeupExecutionId = target.getId();
+            }
+        }
+        if (wakeupExecutionId != null) events.publishEvent(new FlowQueuedEvent(wakeupExecutionId));
+        return new BatchCancelResult(cancelled, cancelling, targets.size() - cancelled - cancelling);
+    }
+
+    private static boolean canCancelBatchExecution(SkillFlowExecution execution) {
+        return execution != null && (execution.getStatus() == FlowExecutionStatus.WAITING_METRICS ||
+            execution.getStatus() == FlowExecutionStatus.QUEUED || execution.getStatus() == FlowExecutionStatus.RUNNING);
+    }
+
+    private void cancelBatchExecution(SkillFlowExecution execution, LocalDateTime now) {
+        List<SkillFlowNodeExecution> nodes = mapper.selectNodeExecutions(execution.getId());
+        boolean live = nodes.stream().anyMatch(n -> n.getStatus() == FlowNodeExecutionStatus.RUNNING &&
+            n.getLeaseExpiresAt() != null && n.getLeaseExpiresAt().isAfter(now));
+        execution.setCancelRequestedAt(now);
+        execution.setStatus(live ? FlowExecutionStatus.CANCEL_REQUESTED : FlowExecutionStatus.CANCELLED);
+        if (!live) {
+            execution.setActiveGuardKey(null);
+            execution.setCompletedAt(now);
+        }
+        mapper.updateExecution(execution);
+        for (var node : nodes) {
+            if (!node.getStatus().terminal() && (!live || node.getStatus() != FlowNodeExecutionStatus.RUNNING)) {
+                node.setStatus(FlowNodeExecutionStatus.CANCELLED);
+                node.setCompletedAt(now);
+                mapper.updateNodeExecution(node);
+            }
+        }
     }
 
     /**

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { assignmentOptions, PptApiError, searchPptPeople, saveFindingAssignment, type PptPerson } from '../../api/pptAnomaly';
+import {
+  assignmentOptions, PptApiError, searchPptPeople, saveFindingAssignment, saveFindingHandlers, type PptPerson,
+} from '../../api/pptAnomaly';
 import type { PptFinding } from '../../types/pptAnomaly';
 
 const props = defineProps<{
@@ -20,7 +22,8 @@ const department = ref(props.fixedDepartment ?? originalDepartment);
 const handlers = ref(originalDepartment ? props.handlers.map(person => person.userId) : []);
 const options = ref<Awaited<ReturnType<typeof assignmentOptions>>>();
 const matchedPeople = ref<PptPerson[]>([]);
-const remembered = ref(new Map(props.handlers.map(person => [person.userId, person.name || person.userId])));
+const remembered = ref(new Map(props.handlers.map(person =>
+  [person.userId, person.name ? `${person.name}（${person.userId}）` : person.userId])));
 const busy = ref(false);
 const searching = ref(false);
 const error = ref('');
@@ -33,10 +36,17 @@ const people = computed(() => {
   const found = new Map<string, string>();
   for (const id of handlers.value) found.set(id, remembered.value.get(id) ?? id);
   for (const person of matchedPeople.value) {
-    if (person.department === department.value) found.set(person.userId, person.name);
+    if (props.fixedDepartment || person.department === department.value) {
+      found.set(person.userId, personLabel(person));
+    }
   }
-  return [...found].map(([id, name]) => ({ id, label: `${name}（${id}）` }));
+  return [...found].map(([id, label]) => ({ id, label }));
 });
+
+function personLabel(person: PptPerson) {
+  const name = person.name ? `${person.name}（${person.userId}）` : person.userId;
+  return props.fixedDepartment && person.department ? `${name} · ${person.department}` : name;
+}
 
 onMounted(async () => {
   try {
@@ -65,10 +75,10 @@ async function searchPeople(keyword: string) {
   if (!department.value) return;
   searching.value = true;
   try {
-    const rows = await searchPptPeople(keyword.trim(), department.value);
+    const rows = await searchPptPeople(keyword.trim(), props.fixedDepartment ? '' : department.value);
     if (request !== searchId) return;
     matchedPeople.value = rows;
-    for (const person of matchedPeople.value) remembered.value.set(person.userId, person.name);
+    for (const person of matchedPeople.value) remembered.value.set(person.userId, personLabel(person));
   } catch {
     if (request === searchId) searchError.value = '人员搜索失败，请重试';
   } finally {
@@ -81,14 +91,21 @@ async function save() {
   busy.value = true;
   error.value = '';
   try {
-    await saveFindingAssignment(props.versionId, {
-      findingId: props.finding?.id, page: page.value, department: department.value, handlers: handlers.value,
-      expectedHandlers: props.fixedDepartment ? props.handlers.map(person => person.userId) : undefined,
-    });
+    if (props.fixedDepartment && props.finding) {
+      await saveFindingHandlers(props.versionId, props.finding.id, {
+        expectedDepartment: props.fixedDepartment,
+        expectedHandlers: props.handlers.map(person => person.userId),
+        handlers: handlers.value,
+      });
+    } else {
+      await saveFindingAssignment(props.versionId, {
+        findingId: props.finding?.id, page: page.value, department: department.value, handlers: handlers.value,
+      });
+    }
     emit('saved');
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '保存归属失败，请重试';
-    conflict.value = !!props.fixedPage && cause instanceof PptApiError && cause.status === 409;
+    error.value = cause instanceof Error ? cause.message : '保存分派失败，请重试';
+    conflict.value = !!(props.fixedPage || props.fixedDepartment) && cause instanceof PptApiError && cause.status === 409;
   } finally {
     busy.value = false;
   }
@@ -96,7 +113,7 @@ async function save() {
 </script>
 
 <template>
-  <el-dialog :model-value="true" :title="title ?? (finding ? '调整归属' : '补建事项')" append-to-body
+  <el-dialog :model-value="true" :title="title ?? (fixedDepartment ? '调整经办人' : finding ? '调整归属' : '补建事项')" append-to-body
     width="min(540px, 94vw)" align-center :close-on-click-modal="false" :before-close="() => { if (!busy) emit('close') }">
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-form label-position="top" :disabled="busy" @submit.prevent="save">
@@ -107,9 +124,8 @@ async function save() {
             :label="`P${entry.page} ${entry.title || '未命名页面'}`" />
         </el-select>
       </el-form-item>
-      <el-form-item label="反馈部门">
-        <span v-if="fixedDepartment">{{ fixedDepartment }}</span>
-        <el-select v-else v-model="department" filterable :allow-create="availableDepartments === undefined"
+      <el-form-item v-if="!fixedDepartment" label="反馈部门">
+        <el-select v-model="department" filterable :allow-create="availableDepartments === undefined"
           default-first-option :placeholder="availableDepartments ? '选择反馈部门' : '选择或输入部门全称'"
           style="width: 100%" @change="changeDepartment">
           <el-option v-for="name in departments" :key="name" :value="name" :label="name" />
@@ -117,7 +133,7 @@ async function save() {
       </el-form-item>
       <el-form-item label="经办人" required>
         <el-select v-model="handlers" multiple filterable remote :reserve-keyword="false" :remote-method="searchPeople" :loading="searching"
-          :disabled="!department" placeholder="请搜索并选择至少一位经办人" style="width: 100%">
+          :disabled="!department" :placeholder="fixedDepartment ? '搜索姓名或认证号，可跨部门选择' : '请搜索并选择至少一位经办人'" style="width: 100%">
           <el-option v-for="person in people" :key="person.id" :value="person.id" :label="person.label" />
         </el-select>
         <span v-if="searchError">{{ searchError }}</span>
@@ -128,7 +144,7 @@ async function save() {
     </el-form>
     <template #footer>
       <el-button :disabled="busy" @click="emit('close')">取消</el-button>
-      <el-button v-if="conflict" type="primary" @click="emit('reload')">重新加载归属</el-button>
+      <el-button v-if="conflict" type="primary" @click="emit('reload')">重新加载分派</el-button>
       <el-button v-else type="primary" :loading="busy" :disabled="!page || !department || !handlers.length"
         @click="save">保存</el-button>
     </template>

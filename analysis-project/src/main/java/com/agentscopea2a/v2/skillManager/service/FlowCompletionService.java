@@ -204,7 +204,7 @@ public class FlowCompletionService {
                 log.info("Long task HTML report saved: executionId={}, reportPath={}", flow.getId(), reportPath);
                 return new Summary(json.writeValueAsString(Map.of("results", results)), reportPath);
             } catch (FlowReportStorage.ReportStorageException e) {
-                // 报告属于收尾附件，磁盘不足不能反向把已经成功的节点和流程改成失败。
+                // 保留已经成功的节点和汇总数据，由调用方根据触发方式决定执行状态。
                 // 节点结果仍保存在 summaryJson，释放空间后可通过“重新生成汇总”补建报告。
                 log.error(
                     "Flow report persistence failed: code={}, flowId={}, reason={}",
@@ -298,13 +298,19 @@ public class FlowCompletionService {
     /**
      * 执行完成后的首次通知:所有触发类型均遵守执行快照中的完成通知开关。
      * CHAT 通知对话触发人, MANUAL 通知点击执行的人, AUTO_METRIC 通知流程创建人
-     * （三类场景的接收人均已在 triggerUserId 中快照）。deliveryKey 固定为
-     * flow:{id}:INITIAL,借唯一索引天然幂等(复用执行记录或重试均不重复通知)。
+     * （三类场景的接收人均已在 triggerUserId 中快照）。自动执行的成功报告与失败告警使用独立的幂等键，
+     * 失败后重跑成功可发送一次正式报告。
      */
     public void sendInitial(SkillFlowExecution execution) {
         if (execution.getStatus() == FlowExecutionStatus.CANCELLED) return;
         if (Boolean.FALSE.equals(execution.getNotifyEnabledSnapshot())) return;
-        send(execution, "flow:" + execution.getId() + ":INITIAL");
+        boolean automatic = execution.getTriggerType() == FlowTriggerType.AUTO_METRIC;
+        boolean automaticSuccess = automatic && execution.getStatus() == FlowExecutionStatus.SUCCESS;
+        String key = "flow:" + execution.getId() + (automaticSuccess ? ":INITIAL:SUCCESS" : ":INITIAL");
+        if (automatic && mapper.selectNotifications(execution.getId()).stream().anyMatch(n -> key.equals(n.getDeliveryKey()))) {
+            return;
+        }
+        send(execution, key);
     }
 
     /** 手动重发通知:仅终态(且非取消)的执行可用。 */

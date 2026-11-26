@@ -244,7 +244,8 @@ public class PptAnomalyService {
     public record SentMailPage(List<SentMail> rows, long total, Map<String, String> names,
                                List<PptAnomalyMapper.SentMailFilter> filters) {}
 
-    SentMailPage sentMailPage(Long batchId, Long versionId, int page, int size, List<String> departments) {
+    SentMailPage sentMailPage(Long batchId, Long versionId, int page, int size, List<String> departments,
+                              boolean includeFilters) {
         var rows = persistence.sentMailPage(batchId, versionId, departments, size, (long) (page - 1) * size).stream()
                 .map(row -> new SentMail(row.id(), row.batchName(), row.versionNo(), row.fileName(), row.department(),
                         row.subject(), readList(row.toUsers()), readList(row.ccUsers()), row.sentAt()))
@@ -257,7 +258,7 @@ public class PptAnomalyService {
                     .forEach(person -> names.putIfAbsent(person.getUserId(), person.getName()));
         }
         return new SentMailPage(rows, persistence.countSentMails(batchId, versionId, departments), names,
-                persistence.sentMailFilters(departments));
+                includeFilters ? persistence.sentMailFilters(departments) : List.of());
     }
 
     /** 按当前用户汇总各版本的本人事项及待反馈数量。 */
@@ -272,22 +273,36 @@ public class PptAnomalyService {
     /** 按当前用户权限查询反馈任务、通知时间和反馈时间。 */
     public List<FeedbackRecord> feedbackRecords(String userId, boolean admin) {
         var noticeColumns = persistence.feedbackNoticeColumns();
-        var visibleDepartments = recordDepartments(userId, admin);
-        if (!admin && visibleDepartments.isEmpty()) return List.of();
-        var records = new ArrayList<FeedbackRecord>();
-        var directory = new HashMap<String, java.util.Optional<DirectoryPerson>>();
-        for (var row : persistence.feedbackRecords(userId, true, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"))) {
+        var ownDepartments = recordDepartments(userId, admin);
+        var rows = persistence.feedbackRecords(userId, true, !noticeColumns.isEmpty(), noticeColumns.contains("notified_at"));
+        var assignedDepartmentsByVersion = new HashMap<Long, Set<String>>();
+        if (!admin) {
+            for (var row : rows) {
+                if (row.findingId() != null && userId.equals(row.recipient())) {
+                    assignedDepartmentsByVersion.computeIfAbsent(row.versionId(), id -> new HashSet<>())
+                            .addAll(readList(row.findingDepartments()));
+                }
+            }
+        }
+        var visible = new ArrayList<PptAnomalyMapper.FeedbackRecordRow>();
+        for (var row : rows) {
             if (row.findingId() == null) continue;
-            var departments = readList(row.findingDepartments());
-            if (!admin) {
-                departments = departments.stream().filter(visibleDepartments::contains).toList();
+            if (!admin && !userId.equals(row.recipient())) {
+                var assignedDepartments = assignedDepartmentsByVersion.getOrDefault(row.versionId(), Set.of());
+                var departments = readList(row.findingDepartments()).stream()
+                        .filter(name -> ownDepartments.contains(name) || assignedDepartments.contains(name)).toList();
                 if (departments.isEmpty()) continue;
                 row = new PptAnomalyMapper.FeedbackRecordRow(row.batchId(), row.batchName(), row.versionId(),
                         row.versionNo(), row.fileName(), row.recipient(), row.findingId(), row.pageNo(), row.title(),
                         row.section(), write(departments), row.status(), row.noticeKind(), row.notifiedAt(), row.feedbackAt());
             }
-            var person = row.recipient() == null ? null : directory
-                    .computeIfAbsent(row.recipient(), id -> java.util.Optional.ofNullable(ledgerPerson(id))).orElse(null);
+            visible.add(row);
+        }
+        var directory = ledgerPeople(visible.stream().map(PptAnomalyMapper.FeedbackRecordRow::recipient).toList());
+        var records = new ArrayList<FeedbackRecord>(visible.size());
+        for (var row : visible) {
+            var departments = readList(row.findingDepartments());
+            var person = row.recipient() == null ? null : directory.get(row.recipient().strip());
             if (departments.isEmpty() && person != null) departments = person.depts();
             String title = row.title() == null ? "" : row.title().strip();
             String configurableTitle = admin ? (title.isBlank() ? "未命名页面" : title) : null;
@@ -314,7 +329,25 @@ public class PptAnomalyService {
     /** 从当前人员台账读取姓名和所有归属部门。 */
     DirectoryPerson ledgerPerson(String userId) {
         if (userId == null || userId.isBlank()) return null;
-        var rows = people.selectByUserId(userId.strip());
+        return directoryPerson(userId.strip(), people.selectByUserId(userId.strip()));
+    }
+
+    private Map<String, DirectoryPerson> ledgerPeople(List<String> userIds) {
+        var ids = userIds.stream().filter(Objects::nonNull).map(String::strip)
+                .filter(id -> !id.isEmpty()).distinct().toList();
+        var directory = new HashMap<String, DirectoryPerson>();
+        // 控制 IN 参数数量，兼容人员较多的历史材料列表。
+        for (int start = 0; start < ids.size(); start += 500) {
+            var rowsById = new LinkedHashMap<String, List<DeveloperPlPersonInfo>>();
+            for (var row : people.selectByUserIds(ids.subList(start, Math.min(start + 500, ids.size())))) {
+                rowsById.computeIfAbsent(row.getUserId(), id -> new ArrayList<>()).add(row);
+            }
+            rowsById.forEach((id, rows) -> directory.put(id, directoryPerson(id, rows)));
+        }
+        return directory;
+    }
+
+    private DirectoryPerson directoryPerson(String userId, List<DeveloperPlPersonInfo> rows) {
         if (rows.isEmpty()) return null;
         var departments = rows.stream().map(DeveloperPlPersonInfo::getDepartment)
                 .filter(department -> department != null && !department.isBlank())
@@ -623,14 +656,7 @@ public class PptAnomalyService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择反馈部门");
         }
         String target = department.strip();
-        var selected = handlers == null ? List.<String>of() : handlers.stream()
-                .filter(Objects::nonNull).map(String::strip).filter(id -> !id.isEmpty()).distinct().sorted().toList();
-        if (selected.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请至少选择一位经办人");
-        }
-        if (selected.stream().anyMatch(id -> !inDepartment(List.of(target), id))) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择属于目标部门的经办人");
-        }
+        var selected = requireHandlers(handlers);
         var existing = findingId == null ? null : persistence.findingAssignment(versionId, findingId);
         if (findingId != null && existing == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "当前版本中没有该事项");
@@ -644,6 +670,10 @@ public class PptAnomalyService {
         }
         boolean transferred = !target.equals(previousDepartment);
         List<String> previousHandlers = existing == null ? List.of() : persistence.assignmentHandlers(existing.id());
+        if (selected.stream().anyMatch(id -> (transferred || !previousHandlers.contains(id))
+                && !inDepartment(List.of(target), id))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择属于目标部门的经办人");
+        }
         if (expectedHandlers != null && (transferred || page != targetPage
                 || !new HashSet<>(expectedHandlers).equals(new HashSet<>(previousHandlers)))) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "事项归属或经办人已变化，请重新打开后调整");
@@ -670,14 +700,62 @@ public class PptAnomalyService {
             persistence.updateFindingAssignment(id, target, departments, revision, updatedStatus);
             persistence.deleteAssignmentHandlers(id);
         }
+        saveHandlerChange(versionId, id, revision, previousDepartment, target, previousHandlers, selected, editor);
+    }
+
+    /** 修改当前事项的经办名单，责任部门和部门归属修订号沿用原值。 */
+    @Transactional(GaussConfig.TX_NAME)
+    public void adjustFindingHandlers(long versionId, long findingId, String expectedDepartment,
+                                      List<String> expectedHandlers, List<String> handlers, String editor) {
+        var status = persistence.lockVersion(versionId);
+        if (status == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "版本不存在");
+        if (!"ANALYZED".equals(status)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "请先完成材料识别");
+        }
+        var finding = persistence.findingAssignment(versionId, findingId);
+        if (finding == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "当前版本中没有该事项");
+        var departments = readList(finding.departments());
+        if (departments.size() != 1) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "请先确认该事项的责任部门");
+        }
+        String department = Objects.requireNonNullElse(finding.department(), departments.get(0));
+        if (!isFeedbackManager(editor) && !inDepartment(List.of(department), editor)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅产品部或责任部门成员可以调整经办人");
+        }
+        var previousHandlers = persistence.assignmentHandlers(findingId);
+        if (!department.equals(expectedDepartment) || expectedHandlers == null
+                || !new HashSet<>(previousHandlers).equals(new HashSet<>(expectedHandlers))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "事项归属或经办人已变化，请重新打开后调整");
+        }
+        var selected = requireHandlers(handlers);
+        if (new HashSet<>(previousHandlers).equals(new HashSet<>(selected))) return;
+        if (selected.stream().anyMatch(id -> !previousHandlers.contains(id) && ledgerPerson(id) == null)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择人员台账中的经办人");
+        }
+        persistence.prepareFindingHandlerChange(findingId);
+        persistence.deleteAssignmentHandlers(findingId);
+        saveHandlerChange(versionId, findingId, finding.revision(), department, department, previousHandlers, selected, editor);
+    }
+
+    private List<String> requireHandlers(List<String> handlers) {
+        var selected = handlers == null ? List.<String>of() : handlers.stream()
+                .filter(Objects::nonNull).map(String::strip).filter(id -> !id.isEmpty()).distinct().sorted().toList();
+        if (selected.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请至少选择一位经办人");
+        }
+        return selected;
+    }
+
+    private void saveHandlerChange(long versionId, long id, int revision, String previousDepartment, String department,
+                                   List<String> previousHandlers, List<String> selected, String editor) {
         for (String handler : selected) persistence.addAssignmentHandler(id, handler);
-        persistence.recordAssignmentChange(id, revision, previousDepartment, target,
-                write(previousHandlers), write(selected), editor);
+        String previous = write(previousHandlers);
+        persistence.recordAssignmentChange(id, revision, previousDepartment, department, previous, write(selected), editor);
         if (!notifier.notificationsEnabledThisWeek(versionId)) return;
         String event = UUID.randomUUID().toString();
         for (String handler : selected) {
             if (!previousHandlers.contains(handler)) {
-                persistence.enqueueAssignmentNotice(event, versionId, id, handler, previousDepartment, write(previousHandlers));
+                persistence.enqueueAssignmentNotice(event, versionId, id, handler, previousDepartment, previous);
             }
         }
     }
@@ -731,18 +809,20 @@ public class PptAnomalyService {
                 recipientIds.computeIfAbsent(row.findingId(), id -> new LinkedHashSet<>()).add(row.userId());
             }
         }
-        var people = new java.util.HashMap<String, FeedbackHandler>();
-        var result = new java.util.HashMap<Long, List<FeedbackHandler>>();
         for (var finding : findings) {
-            Set<String> users = recipientIds.get(finding.id());
-            if (users == null) {
-                String owner = finding.ownerUserId();
-                users = owner == null || owner.isBlank() ? Set.of() : Set.of(owner);
+            String owner = finding.ownerUserId();
+            if (owner != null && !owner.isBlank()) {
+                recipientIds.putIfAbsent(finding.id(), new LinkedHashSet<>(List.of(owner)));
             }
-            result.put(finding.id(), users.stream().map(userId -> people.computeIfAbsent(userId, id -> {
-                var person = ledgerPerson(id);
+        }
+        var directory = ledgerPeople(recipientIds.values().stream().flatMap(Set::stream).toList());
+        var result = new HashMap<Long, List<FeedbackHandler>>();
+        for (var finding : findings) {
+            var users = recipientIds.get(finding.id());
+            result.put(finding.id(), users == null ? List.of() : users.stream().map(id -> {
+                var person = directory.get(id.strip());
                 return new FeedbackHandler(person == null ? null : person.name(), id);
-            })).toList());
+            }).toList());
         }
         return result;
     }
@@ -788,13 +868,20 @@ public class PptAnomalyService {
     /** 在访问权限范围内读取本次、历史反馈及标题明细链接。 */
     private FeedbackHistory feedbackHistory(long findingId, String userId, boolean admin, boolean includeLinks) {
         var owner = persistence.owner(findingId);
-        if (owner == null || (!admin && !canReadFeedback(findingId, owner.userId(), userId))) {
+        if (owner == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
+        }
+        var departments = readList(persistence.findingDepartments(findingId));
+        boolean canReadPrevious = admin || isFeedbackManager(userId)
+                || inDepartment(departments, userId) || (departments.isEmpty() && canView(owner.userId(), userId));
+        if (!canReadPrevious && !isCurrentHandler(findingId, userId)
+                && !inAssignedDepartment(findingId, departments, userId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
         }
         var state = persistence.feedbackState(findingId);
         var current = state.id() == null ? null
                 : new PptAnomalyMapper.FeedbackNote(state.judgement(), state.explanation(), state.userId());
-        return new FeedbackHistory(current, persistence.previousFeedback(findingId),
+        return new FeedbackHistory(current, canReadPrevious ? persistence.previousFeedback(findingId) : null,
                 includeLinks ? persistence.findingDetailLinks(findingId) : List.of(), feedbackRevision(state));
     }
 
@@ -846,9 +933,15 @@ public class PptAnomalyService {
         return persistence.noticeMaterial(versionId).mailLabel();
     }
 
-    /** 判断当前用户在指定版本中是否具有经办事项。 */
-    public boolean isVersionRecipient(long versionId, String userId) {
-        return !persistence.recipientFindingIds(versionId, userId).isEmpty();
+    /** 整份材料下载沿用产品部及本部门经办人的权限。 */
+    boolean canDownloadOriginal(long versionId, String userId) {
+        if (isFeedbackManager(userId)) return true;
+        var assigned = new HashSet<>(persistence.recipientFindingIds(versionId, userId));
+        if (assigned.isEmpty()) return false;
+        var ownDepartments = recordDepartments(userId, false);
+        return persistence.findings(versionId).stream().filter(row -> assigned.contains(row.id()))
+                .map(row -> readList(row.departments()))
+                .anyMatch(departments -> departments.isEmpty() || departments.stream().anyMatch(ownDepartments::contains));
     }
 
     /** 解析原件路径并兼容历史目录，限定文件位于受支持的存储范围。 */
@@ -1393,29 +1486,59 @@ public class PptAnomalyService {
         boolean uploader = userId != null && userId.equals(persistence.versionUploader(versionId));
         // 事项经办关系取本版本快照，后续修改标题配置不会替换已分派的经办人。
         Set<Long> mine = new HashSet<>(persistence.recipientFindingIds(versionId, userId));
+        var ownDepartments = recordDepartments(userId, false);
+        var assignedDepartments = admin || mine.isEmpty() ? Set.<String>of() : assignedDepartments(versionId, userId);
+        boolean manager = admin || isFeedbackManager(userId);
         List<Finding> all = persistence.findings(versionId).stream()
-                .filter(row -> admin || mine.contains(row.id()) || canSeeFinding(row, userId, uploader))
-                .map(row -> finding(row, userId)).toList();
+                .filter(row -> admin || mine.contains(row.id())
+                        || canSeeFinding(row, userId, uploader, ownDepartments, assignedDepartments))
+                .map(row -> finding(row, ownDepartments, manager, mine.contains(row.id()))).toList();
         if (department == null || department.isBlank()) return all;
         return all.stream().filter(f -> f.departments().contains(department)).toList();
+    }
+
+    record DirectoryFindings(List<Finding> visible, List<Finding> assigned, Set<Long> myIds) {}
+
+    /** 反馈目录的可见事项和经办事项复用同一份版本数据。 */
+    DirectoryFindings directoryFindings(long versionId, String ownerId, String userId, boolean admin) {
+        Set<Long> mine = new HashSet<>(persistence.recipientFindingIds(versionId, userId));
+        Set<Long> assigned = userId.equals(ownerId) ? mine : new HashSet<>(persistence.recipientFindingIds(versionId, ownerId));
+        var ownDepartments = recordDepartments(userId, false);
+        var assignedDepartments = admin || mine.isEmpty() ? Set.<String>of() : assignedDepartments(versionId, userId);
+        boolean manager = isFeedbackManager(userId);
+        boolean uploader = !admin && userId.equals(persistence.versionUploader(versionId));
+        var visible = new ArrayList<Finding>();
+        var ownerFindings = new ArrayList<Finding>();
+        for (var row : persistence.findings(versionId)) {
+            boolean myFinding = mine.contains(row.id());
+            if (admin || myFinding || canSeeFinding(row, userId, uploader, ownDepartments, assignedDepartments)) {
+                visible.add(finding(row, ownDepartments, admin || manager, myFinding));
+            }
+            if (assigned.contains(row.id())) {
+                ownerFindings.add(finding(row, ownDepartments, manager, myFinding));
+            }
+        }
+        return new DirectoryFindings(visible, ownerFindings, mine);
     }
 
     /** 读取指定经办人的事项，并标明当前用户是否可编辑。 */
     public List<Finding> recordFindings(long versionId, String recordOwner, String userId) {
         Set<Long> assigned = new HashSet<>(persistence.recipientFindingIds(versionId, recordOwner));
+        var mine = userId.equals(recordOwner) ? assigned : new HashSet<>(persistence.recipientFindingIds(versionId, userId));
+        var ownDepartments = recordDepartments(userId, false);
+        boolean manager = isFeedbackManager(userId);
         return persistence.findings(versionId).stream()
                 .filter(row -> assigned.contains(row.id()))
-                .map(row -> finding(row, userId))
+                .map(row -> finding(row, ownDepartments, manager, mine.contains(row.id())))
                 .toList();
     }
 
     /** 依据事项经办关系及部门可见范围判断反馈读取权限。 */
     private boolean canReadFeedback(long findingId, String owner, String userId) {
-        if (isFeedbackManager(userId)) return true;
+        if (isFeedbackManager(userId) || isCurrentHandler(findingId, userId)) return true;
         List<String> departments = readList(persistence.findingDepartments(findingId));
-        return departments.isEmpty()
-                ? canView(owner, userId) || (userId != null && persistence.isFindingRecipient(findingId, userId))
-                : inDepartment(departments, userId);
+        return departments.isEmpty() ? canView(owner, userId)
+                : inDepartment(departments, userId) || inAssignedDepartment(findingId, departments, userId);
     }
 
     boolean canReadFeedback(long findingId, String userId) {
@@ -1424,10 +1547,28 @@ public class PptAnomalyService {
     }
 
     /** 按事项部门、负责人和上传人关系判断可见性。 */
-    private boolean canSeeFinding(PptAnomalyMapper.FindingRow row, String userId, boolean uploader) {
+    private boolean canSeeFinding(PptAnomalyMapper.FindingRow row, String userId, boolean uploader,
+                                  List<String> ownDepartments, Set<String> assignedDepartments) {
         List<String> departments = readList(row.departments());
-        if (!departments.isEmpty()) return inDepartment(departments, userId);
+        if (!departments.isEmpty()) {
+            return departments.stream().anyMatch(name -> ownDepartments.contains(name) || assignedDepartments.contains(name));
+        }
         return (row.owner() == null && uploader) || canView(row.owner(), userId);
+    }
+
+    private Set<String> assignedDepartments(long versionId, String userId) {
+        var departments = new HashSet<String>();
+        for (String json : persistence.recipientFindingDepartments(versionId, userId)) {
+            departments.addAll(readList(json));
+        }
+        return departments;
+    }
+
+    /** 跨部门经办关系仅授予同一版本内责任部门的当前反馈读取权限。 */
+    private boolean inAssignedDepartment(long findingId, List<String> departments, String userId) {
+        if (departments.isEmpty() || userId == null) return false;
+        Long versionId = persistence.findingVersionId(findingId);
+        return versionId != null && departments.stream().anyMatch(assignedDepartments(versionId, userId)::contains);
     }
 
     /** 判断用户所在部门是否与事项部门相交。 */
@@ -1440,8 +1581,8 @@ public class PptAnomalyService {
         return userId != null && PptAnomalyController.isProductDepartmentUser(userId, people);
     }
 
-    private boolean canEditFeedback(List<String> departments, String userId) {
-        return isFeedbackManager(userId) || inDepartment(departments, userId);
+    private boolean isCurrentHandler(long findingId, String userId) {
+        return userId != null && persistence.isFindingRecipient(findingId, userId);
     }
 
     /** 判断当前用户与负责人是否为同一人或属于相同部门。 */
@@ -1457,10 +1598,11 @@ public class PptAnomalyService {
     public Slide feedbackSlide(long versionId, int pageNo, String userId, boolean admin) {
         boolean uploader = userId != null && userId.equals(persistence.versionUploader(versionId));
         Set<Long> mine = new HashSet<>(persistence.recipientFindingIds(versionId, userId));
-        if (persistence.findings(versionId).stream()
-                .noneMatch(row -> row.page() == pageNo
-                        && (admin || mine.contains(row.id()) || Objects.equals(row.owner(), userId)
-                            || canSeeFinding(row, userId, uploader)))) {
+        var ownDepartments = admin ? List.<String>of() : recordDepartments(userId, false);
+        var assignedDepartments = admin || mine.isEmpty() ? Set.<String>of() : assignedDepartments(versionId, userId);
+        if (persistence.findingsOnPage(versionId, pageNo).stream()
+                .noneMatch(row -> admin || mine.contains(row.id()) || Objects.equals(row.owner(), userId)
+                            || canSeeFinding(row, userId, uploader, ownDepartments, assignedDepartments))) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "页面不存在");
         }
         return slide(versionId, pageNo);
@@ -1719,20 +1861,20 @@ public class PptAnomalyService {
 
     /** 校验经办权限和反馈内容，保存说明、图片关联及事项处理状态。 */
     @Transactional(GaussConfig.TX_NAME)
-    public void saveFeedback(long findingId, FeedbackRequest request, String userId) {
-        saveFeedback(findingId, request, List.of(), userId);
+    public String saveFeedback(long findingId, FeedbackRequest request, String userId) {
+        return saveFeedback(findingId, request, List.of(), userId);
     }
 
     /** 校验经办权限和反馈内容，保存说明、图片关联及事项处理状态。 */
     @Transactional(GaussConfig.TX_NAME)
-    public void saveFeedback(long findingId, FeedbackRequest request, List<MultipartFile> attachments, String userId) {
+    public String saveFeedback(long findingId, FeedbackRequest request, List<MultipartFile> attachments, String userId) {
         Long versionId = persistence.findingVersionId(findingId);
         String versionStatus = versionId == null ? null : persistence.lockVersion(versionId);
         var finding = versionStatus == null ? null : persistence.findingAssignment(versionId, findingId);
         if (finding == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "异常不存在");
         var departments = readList(finding.departments());
-        if (!canEditFeedback(departments, userId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅产品部或反馈部门成员可以编辑反馈");
+        if (!isFeedbackManager(userId) && !inDepartment(departments, userId) && !isCurrentHandler(findingId, userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅产品部、责任部门成员或当前经办人可以编辑反馈");
         }
         var state = persistence.feedbackState(findingId);
         if (request.baseRevision() != null && !feedbackRevision(state).equals(request.baseRevision())) {
@@ -1758,13 +1900,14 @@ public class PptAnomalyService {
         if (empty) explanation = "";
         String nextStatus = empty ? "PENDING_FEEDBACK" : confirmed ? "CONFIRMED" : "ADJUSTED";
         if (nextStatus.equals(finding.status())
-                && (empty || (judgement.equals(state.judgement()) && explanation.equals(state.explanation())))) return;
+                && (empty || (judgement.equals(state.judgement()) && explanation.equals(state.explanation())))) return nextStatus;
         // 保存反馈说明与附件索引后更新事项状态，两次数据库写入属于同一事务。
         persistence.feedback(findingId, judgement, "[]", explanation, userId);
         persistence.findingStatus(findingId, nextStatus);
         if (!empty && "ANALYZED".equals(versionStatus) && !PptFeedbackMailTable.isAnalyzed(finding.status())) {
             notifier.enqueueCompletedDepartments(versionId, departments);
         }
+        return nextStatus;
     }
 
     private static boolean isEmptyFeedbackExplanation(String explanation) {
@@ -1884,11 +2027,12 @@ public class PptAnomalyService {
     }
 
     /** 将持久化事项转换为页面数据，并计算当前用户的可编辑标记。 */
-    private Finding finding(PptAnomalyMapper.FindingRow row, String userId) {
-        String owner = row.owner();
+    private Finding finding(PptAnomalyMapper.FindingRow row, List<String> ownDepartments, boolean manager, boolean assigned) {
         var departments = readList(row.departments());
+        boolean managesDepartment = manager || departments.stream().anyMatch(ownDepartments::contains);
         return new Finding(row.id(), row.sequence(), row.page(), row.title(), row.chapter(), row.text(), row.keyword(),
-                departments, owner, row.status(), row.relation(), canEditFeedback(departments, userId));
+                departments, row.owner(), row.status(), row.relation(), managesDepartment || assigned,
+                managesDepartment && departments.size() == 1);
     }
 
     /** 按数据库配置提取页面正文及指定表格内容。 */

@@ -1037,7 +1037,7 @@
         ORDER BY id DESC
     </select>
 
-    <!-- 新建通知投递记录(delivery_key 全局唯一防重:初次完成通知为 flow:{executionId}:INITIAL) -->
+    <!-- 新建通知投递记录。delivery_key 全局唯一，自动执行的正式成功通知和首次失败告警各自去重。 -->
     <insert id="insertNotification" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO skill_flow_notification (flow_execution_id, delivery_key, status, recipient, channel, request_json, error_message)
         VALUES (#{flowExecutionId}, #{deliveryKey}, #{status}, #{recipient}, #{channel}, #{requestJson}, #{errorMessage})

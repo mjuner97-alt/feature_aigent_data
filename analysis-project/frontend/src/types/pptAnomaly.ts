@@ -24,6 +24,6 @@ export interface PptVersionWork {
 /** 版本板块负责人和事项数量。 */
 export interface PptSectionWork { section: string; ownerUserId: string | null; total: number }
 /** 识别事项、反馈状态及当前用户可编辑标记。 */
-export interface PptFinding { id:number; sequenceNo:number; pageNo:number; title:string; chapter?:string; sourceText:string; anomalyKeyword?:string; departments:string[]; ownerUserId?:string; status:string; relation:string; editable:boolean }
+export interface PptFinding { id:number; sequenceNo:number; pageNo:number; title:string; chapter?:string; sourceText:string; anomalyKeyword?:string; departments:string[]; ownerUserId?:string; status:string; relation:string; editable:boolean; canAdjustHandlers:boolean }
 /** PPT 页面预览和识别方式信息。 */
 export interface PptSlide { id:number; pageNo:number; title?:string; imageUrl?:string; renderStatus:string; recognitionType?:string }

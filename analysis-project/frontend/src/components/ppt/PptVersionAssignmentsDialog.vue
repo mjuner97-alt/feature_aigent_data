@@ -8,7 +8,12 @@ import PptAssignmentDialog from './PptAssignmentDialog.vue';
 const props = defineProps<{
   versionId: number; versionNo: number | null; initialSection?: string | null; initialPageNo?: number | null;
 }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: [changed: boolean] }>();
+let changed = false;
+
+function close() {
+  emit('close', changed);
+}
 
 type Directory = Awaited<ReturnType<typeof feedbackDirectory>>;
 type Options = Awaited<ReturnType<typeof assignmentOptions>>;
@@ -54,7 +59,7 @@ async function loadAssignments() {
   error.value = '';
   try {
     const [directory, options] = await Promise.all([
-      feedbackDirectory(props.versionId), assignmentOptions(props.versionId),
+      feedbackDirectory(props.versionId, undefined, undefined, false), assignmentOptions(props.versionId),
     ]);
     const firstLoad = !data.value;
     data.value = { directory, options };
@@ -76,11 +81,13 @@ async function loadAssignments() {
 }
 
 function reloadAssignments() {
+  changed = true;
   editing.value = undefined;
   void loadAssignments();
 }
 
 function assignmentSaved() {
+  changed = true;
   ElMessage.success('分派已更新');
   reloadAssignments();
 }
@@ -90,7 +97,7 @@ onMounted(loadAssignments);
 
 <template>
   <el-dialog class="version-assignments-dialog" :model-value="true" title="调整分派" width="min(900px, 94vw)" align-center append-to-body
-    :close-on-click-modal="false" @update:model-value="(open: boolean) => { if (!open) emit('close') }">
+    :close-on-click-modal="false" @update:model-value="(open: boolean) => { if (!open) close() }">
     <p v-if="data" class="version-summary">
       <span v-if="versionNo !== null" class="version-badge">V{{ versionNo }}</span><span>{{ data.directory.fileName }}</span>
     </p>
@@ -143,7 +150,7 @@ onMounted(loadAssignments);
       <el-empty v-else-if="!loading" description="此版本暂无可分派页面" />
     </div>
     <template #footer>
-      <el-button class="close-button" @click="emit('close')">关闭</el-button>
+      <el-button class="close-button" @click="close">关闭</el-button>
     </template>
     <PptAssignmentDialog v-if="editing" :version-id="versionId" :finding="editing.finding"
       :fixed-page="editing.page"

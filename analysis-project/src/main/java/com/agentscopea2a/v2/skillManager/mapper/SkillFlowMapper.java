@@ -37,6 +37,12 @@ public interface SkillFlowMapper {
     @org.apache.ibatis.annotations.ResultMap("ExecutionMap")
     List<SkillFlowExecution> selectObjectBatch(@Param("flowId") Long flowId, @Param("batchId") String batchId);
 
+    @org.apache.ibatis.annotations.Select(
+        "SELECT * FROM skill_flow_execution WHERE flow_id=#{flowId} AND batch_id=#{batchId} ORDER BY id FOR UPDATE"
+    )
+    @org.apache.ibatis.annotations.ResultMap("ExecutionMap")
+    List<SkillFlowExecution> selectObjectBatchForUpdate(@Param("flowId") Long flowId, @Param("batchId") String batchId);
+
     /** 批次详情列表，附带与执行中心相同口径的节点进度和累计节点耗时。 */
     List<SkillFlowExecution> selectObjectBatchList(
         @Param("flowId") Long flowId,

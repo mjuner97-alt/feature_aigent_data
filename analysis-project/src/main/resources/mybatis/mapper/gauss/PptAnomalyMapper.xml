@@ -443,8 +443,8 @@
                ) END AS feedback_at
         FROM digital_qa_ppt_material_version v
         JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
-        LEFT JOIN recipients r ON r.version_id=v.id
-        LEFT JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
+        JOIN recipients r ON r.version_id=v.id
+        JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
         LEFT JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
         LEFT JOIN digital_qa_ppt_finding_recipient assigned ON assigned.finding_id=f.id AND assigned.user_id=r.recipient
         <if test="notices">
@@ -782,6 +782,13 @@
         DELETE FROM digital_qa_ppt_finding_handler WHERE finding_id=#{id}
     </delete>
 
+    <!-- 清除旧版单人负责人记录，并将补齐经办人的事项转为待反馈。 -->
+    <update id="prepareFindingHandlerChange">
+        UPDATE digital_qa_ppt_finding
+        SET owner_user_id=NULL, status=CASE WHEN status='UNASSIGNED' THEN 'PENDING_FEEDBACK' ELSE status END
+        WHERE id=#{id}
+    </update>
+
     <update id="updateFindingAssignment">
         UPDATE digital_qa_ppt_finding
         SET feedback_department=#{department},auto_departments=#{departments},assignment_revision=#{revision},
@@ -855,8 +862,24 @@
     </select>
 
     <!-- 按识别序号查询指定版本的事项。 -->
+    <sql id="versionFindings">
+        SELECT f.id,f.sequence_no,s.page_no,f.title,f.chapter,f.source_text,f.anomaly_keyword,
+               f.auto_departments,f.owner_user_id,f.status,f.version_relation
+        FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+        WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED'
+    </sql>
+
     <select id="findings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingRow">
-        SELECT f.id,f.sequence_no,s.page_no,f.title,f.chapter,f.source_text,f.anomaly_keyword,f.auto_departments,f.owner_user_id,f.status,f.version_relation FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED' ORDER BY f.sequence_no
+        <include refid="versionFindings"/> ORDER BY f.sequence_no
+    </select>
+
+    <select id="findingsOnPage" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingRow">
+        <include refid="versionFindings"/> AND s.page_no=#{page}
+    </select>
+
+    <select id="findingDepartmentStatuses" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingDepartmentStatus">
+        SELECT auto_departments AS departments, status FROM digital_qa_ppt_finding
+        WHERE version_id=#{id} AND status &lt;&gt; 'DELETED'
     </select>
 
     <!-- 读取指定版本和页码的页面元数据。 -->
@@ -1154,6 +1177,13 @@
         SELECT f.id FROM digital_qa_ppt_finding f
         JOIN digital_qa_ppt_finding_recipient h ON h.finding_id=f.id
         WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND h.user_id=#{user}
+    </select>
+    <!-- 查询当前经办人在同一版本中受分派事项的责任部门。 -->
+    <select id="recipientFindingDepartments" resultType="string">
+        SELECT DISTINCT f.auto_departments FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_finding_recipient h ON h.finding_id=f.id
+        WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND h.user_id=#{user}
+          AND f.auto_departments IS NOT NULL
     </select>
     <!-- 判断用户是否属于当前事项的反馈接收人。 -->
     <select id="isFindingRecipient" resultType="boolean">

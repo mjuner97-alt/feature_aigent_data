@@ -1266,7 +1266,7 @@ public class HtmlReportRenderer {
         sb.append(reportCss(layout)).append("</style>");
         sb.append("</head><body");
         if (!completeHtml) sb.append(" data-report-markdown");
-        if (layout == Layout.FRAME) sb.append(" data-report-frame-document");
+        if (!includeToc) sb.append(" data-report-frame-document");
         if (layout == Layout.LONG_TASK_SUMMARY) sb.append(" data-report-summary");
         sb.append(">");
         if (includeToc) {

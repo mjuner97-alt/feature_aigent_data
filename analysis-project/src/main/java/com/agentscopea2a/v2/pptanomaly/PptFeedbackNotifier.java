@@ -127,7 +127,7 @@ public class PptFeedbackNotifier {
     /** 由持有版本锁的反馈事务登记已完成部门，提交后再发送。 */
     void enqueueCompletedDepartments(long versionId, List<String> departments) {
         if (departments.isEmpty() || !notificationsEnabledThisWeek(versionId)) return;
-        var findings = persistence.findings(versionId);
+        var findings = persistence.findingDepartmentStatuses(versionId);
         boolean queued = false;
         for (String department : new java.util.LinkedHashSet<>(departments)) {
             var items = findings.stream().filter(item -> belongsToDepartment(item.departments(), department)).toList();
@@ -217,18 +217,23 @@ public class PptFeedbackNotifier {
                 return;
             }
             String url = baseUrl + "/ppt-anomaly/overview#version=" + notice.versionId()
-                    + "&finding=" + notice.findingId() + "&scope=all";
+                    + "&finding=" + notice.findingId() + "&exact=1";
             var material = persistence.noticeMaterial(notice.versionId());
-            String subject = "【分析经办人调整】《" + material.mailLabel() + "》V1稿待分析事项的通知";
+            boolean analyzed = PptFeedbackMailTable.isAnalyzed(finding.status());
+            String subject = "【分析经办人调整】《" + material.mailLabel() + "》"
+                    + (analyzed ? "已反馈事项的通知" : "待分析事项的通知");
             List<String> to = List.of(notice.recipient());
             List<String> previousHandlers = previousAssignmentHandlers(notice.previousHandlers());
-            var cc = java.util.stream.Stream.concat(supervisors(notice.department(), to).stream(), previousHandlers.stream())
-                    .filter(id -> !to.contains(id)).distinct().toList();
+            String department = notice.department() == null ? notice.previousDepartment() : notice.department();
+            List<String> cc = List.of();
             String previousLabel = previousAssignmentLabel(notice.previousDepartment(), previousHandlers);
-            String body = "<p>您好：</p><p style=\"text-indent:2em;\">您有新增分析的关注事项（原经办人："
-                    + HtmlUtils.htmlEscape(previousLabel)
-                    + "），共1项，请于1个小时内<a href=\"" + HtmlUtils.htmlEscape(url)
-                    + "\">点击链接</a>反馈分析结果。</p>" + feedbackFooter(notice.department());
+            String link = "<a href=\"" + HtmlUtils.htmlEscape(url) + "\">查看事项</a>";
+            String action = analyzed ? "该事项已反馈，您可以" + link + "及反馈结果。"
+                    : "请于1个小时内" + link + "并反馈分析结果。";
+            String body = "<p>您好：</p><p style=\"text-indent:2em;\">您被指定为一条事项的经办人（责任部门："
+                    + HtmlUtils.htmlEscape(department == null ? "未归属" : department)
+                    + "，原经办人：" + HtmlUtils.htmlEscape(previousLabel) + "）。"
+                    + action + "</p>" + feedbackFooter(department);
             var payload = new NotificationPayload("HTML", body, null, null, url, null, subject,
                     null, null, notice.versionId(), "SUCCESS", LocalDateTime.now(CHINA),
                     to, "METRIC", cc);
@@ -241,8 +246,10 @@ public class PptFeedbackNotifier {
                 return;
             }
             var sentAt = LocalDateTime.now(CHINA);
-            persistence.markFeedbackNotified(List.of(notice.findingId()), sentAt, feedbackDeadline(sentAt, 1));
-            persistence.recordFeedbackMail(notice.versionId(), notice.department(), subject, body,
+            if (!analyzed) {
+                persistence.markFeedbackNotified(List.of(notice.findingId()), sentAt, feedbackDeadline(sentAt, 1));
+            }
+            persistence.recordFeedbackMail(notice.versionId(), department, subject, body,
                     recipientJson(to), recipientJson(cc), "SYSTEM");
             persistence.finishAssignmentNotice(notice.eventId(), notice.recipient(), "SENT");
         });

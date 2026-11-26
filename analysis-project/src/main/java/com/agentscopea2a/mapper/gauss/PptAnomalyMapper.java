@@ -244,6 +244,8 @@ public interface PptAnomalyMapper {
 
     int addAssignmentHandler(@Param("id") long id, @Param("user") String user);
 
+    int prepareFindingHandlerChange(@Param("id") long id);
+
     int updateFindingAssignment(@Param("id") long id, @Param("department") String department,
                                 @Param("departments") String departments, @Param("revision") int revision,
                                 @Param("status") String status);
@@ -273,12 +275,18 @@ public interface PptAnomalyMapper {
     int markFailed(@Param("id") long id);
     /** 按识别序号查询指定版本的事项。 */
     List<FindingRow> findings(@Param("id") long id);
+
+    List<FindingRow> findingsOnPage(@Param("id") long id, @Param("page") int page);
+
+    record FindingDepartmentStatus(String departments, String status) {}
+    List<FindingDepartmentStatus> findingDepartmentStatuses(@Param("id") long id);
     /** 结果汇总使用的事项与经办人关系。 */
     record ResultHandler(long findingId, String userId) {}
     /** 查询结果汇总中各事项对应的经办人。 */
     List<ResultHandler> resultHandlers(@Param("id") long id);
     /** 查询指定用户在版本中负责的事项主键。 */
     List<Long> recipientFindingIds(@Param("version") long versionId, @Param("user") String userId);
+    List<String> recipientFindingDepartments(@Param("version") long versionId, @Param("user") String userId);
     /** 判断用户是否属于当前事项的反馈接收人。 */
     boolean isFindingRecipient(@Param("id") long id, @Param("user") String userId);
     /** 读取事项自动识别的部门 JSON。 */
