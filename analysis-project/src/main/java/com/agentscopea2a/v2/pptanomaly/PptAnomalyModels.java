@@ -20,7 +20,7 @@ public final class PptAnomalyModels {
     /** 反馈事项及当前用户是否可编辑的展示数据。 */
     public record Finding(long id, int sequenceNo, int pageNo, String title, String chapter,
                           String sourceText, String anomalyKeyword, List<String> departments,
-                          String ownerUserId, String status, String relation, boolean editable) {}
+                          String ownerUserId, String status, String relation, boolean editable, boolean canAdjustHandlers) {}
     /** 材料页面及其预览和识别模式信息。 */
     public record Slide(long id, int pageNo, String title, String imageUrl, String renderStatus,
                         String recognitionType) {}

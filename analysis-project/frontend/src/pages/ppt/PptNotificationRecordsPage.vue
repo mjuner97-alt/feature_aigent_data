@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { getPptSentMailPage, type PptSentMailPage } from '../../api/pptAnomaly';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
@@ -18,10 +18,10 @@ const pageSize = 20;
 const result = ref<PptSentMailPage>();
 const loading = ref(false);
 const error = ref('');
-const filters = computed(() => result.value?.filters ?? []);
-const batches = computed(() => [...new Map(filters.value.map(row => [row.batchId, row.batchName]))]
+const filters = ref<PptSentMailPage['filters']>();
+const batches = computed(() => [...new Map((filters.value ?? []).map(row => [row.batchId, row.batchName]))]
   .map(([id, name]) => ({ id, name })));
-const versions = computed(() => filters.value.filter(row => row.batchId === batchId.value));
+const versions = computed(() => (filters.value ?? []).filter(row => row.batchId === batchId.value));
 const recipientGroups = { to: '主送', cc: '抄送' } as const;
 const previewLimit = 2;
 const fullListOpen = ref(false);
@@ -32,21 +32,26 @@ const filteredPeople = computed(() => {
   const term = recipientKeyword.value.trim().toLowerCase();
   return fullList.value.filter(({ id, name }) => id.toLowerCase().includes(term) || name.toLowerCase().includes(term));
 });
-let request = 0;
+let activeRequest: AbortController | undefined;
 
-async function load() {
-  const current = ++request;
+async function load(refreshFilters = false) {
+  activeRequest?.abort();
+  const request = new AbortController();
+  activeRequest = request;
+  const includeFilters = refreshFilters || !filters.value;
   loading.value = true;
   error.value = '';
   try {
-    const data = await getPptSentMailPage(page.value, batchId.value, versionId.value);
-    if (current === request) result.value = data;
+    const data = await getPptSentMailPage(page.value, batchId.value, versionId.value, includeFilters, request.signal);
+    if (request.signal.aborted) return;
+    if (includeFilters) filters.value = data.filters;
+    result.value = data;
   } catch (cause) {
-    if (current !== request) return;
+    if (request.signal.aborted) return;
     result.value = undefined;
     error.value = cause instanceof Error ? cause.message : '读取通知记录失败';
   } finally {
-    if (current === request) loading.value = false;
+    if (activeRequest === request) loading.value = false;
   }
 }
 
@@ -73,7 +78,8 @@ function showRecipients(group: keyof typeof recipientGroups, ids: string[]) {
 }
 
 watch([batchId, versionId], () => { page.value = 1; }, { flush: 'sync' });
-watch([batchId, versionId, page], load, { immediate: true });
+watch([batchId, versionId, page], () => { void load(); }, { immediate: true });
+onBeforeUnmount(() => activeRequest?.abort());
 </script>
 
 <template>
@@ -90,11 +96,11 @@ watch([batchId, versionId, page], load, { immediate: true });
         @change="filterVersion">
         <el-option v-for="version in versions" :key="version.versionId" :label="`v${version.versionNo}`" :value="version.versionId" />
       </el-select>
-      <el-button :loading="loading" @click="load">刷新</el-button>
+      <el-button :loading="loading" @click="load(true)">刷新</el-button>
     </PptListFilterBar>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false">
-      <el-button link type="primary" @click="load">重试</el-button>
+      <el-button link type="primary" @click="load(true)">重试</el-button>
     </el-alert>
     <el-table v-else v-loading="loading" class="notification-table" :data="result?.rows ?? []"
       row-key="id" empty-text="暂无通知记录">

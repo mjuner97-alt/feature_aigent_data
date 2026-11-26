@@ -13,12 +13,13 @@ export interface PptSentMailPage {
   filters: { batchId: number; batchName: string; versionId: number; versionNo: number }[];
 }
 
-export async function getPptSentMailPage(page: number, batchId?: number, versionId?: number) {
-  const query = new URLSearchParams({ page: String(page) });
+export async function getPptSentMailPage(page: number, batchId?: number, versionId?: number,
+  includeFilters = true, signal?: AbortSignal) {
+  const query = new URLSearchParams({ page: String(page), includeFilters: String(includeFilters) });
   if (batchId !== undefined) query.set('batchId', String(batchId));
   if (versionId !== undefined) query.set('versionId', String(versionId));
   return parse<PptSentMailPage>(await fetch(`${base}/notifications?${query}`, {
-    headers: headers(), cache: 'no-store',
+    headers: headers(), cache: 'no-store', signal,
   }));
 }
 /** 为接口请求补充本地保存的用户标识，缺少标识时使用历史演示默认值。 */
@@ -226,6 +227,7 @@ export async function feedbackDirectory(versionId: number, recordOwner?: string,
     fileName: string; materialMailLabel: string; departments: string[]; assigned: PptFinding[]; departmentFindings: PptFinding[]; myPending: PptFinding[]; myAssigned: PptFinding[]; originalTitles?: Record<number, string>;
     contacts: Partial<Record<number, { name: string | null; userId: string }>>;
     handlers: Partial<Record<number, { name: string | null; userId: string }[]>>;
+    canDownloadOriginal: boolean;
   }>(
     await fetch(`${base}/versions/${versionId}/feedback-directory?${query}`, { headers: headers() }),
   );
@@ -266,9 +268,9 @@ export interface FeedbackEdit {
   after: FeedbackNote;
 }
 /** 读取事项当前反馈、历史反馈及标题明细链接。 */
-export async function feedbackHistory(findingId: number) {
+export async function feedbackHistory(findingId: number, signal?: AbortSignal) {
   return parse<{ current: FeedbackNote | null; previous: FeedbackNote | null; detailLinks?: PptTitleDetailLink[]; baseRevision: string }>(
-    await fetch(`${base}/findings/${findingId}/feedback-history`, { headers: headers() }),
+    await fetch(`${base}/findings/${findingId}/feedback-history`, { headers: headers(), signal }),
   );
 }
 
@@ -286,6 +288,13 @@ export async function assignmentOptions(versionId: number) {
 export async function saveFindingAssignment(versionId: number, payload:
   { findingId?: number; page: number; department: string; handlers: string[]; expectedHandlers?: string[] }) {
   return parse<{ status: string }>(await fetch(`${base}/versions/${versionId}/finding-assignment`, {
+    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(payload),
+  }));
+}
+
+export async function saveFindingHandlers(versionId: number, findingId: number, payload:
+  { expectedDepartment: string; expectedHandlers: string[]; handlers: string[] }) {
+  return parse<{ status: string }>(await fetch(`${base}/versions/${versionId}/findings/${findingId}/handlers`, {
     method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(payload),
   }));
 }
@@ -328,12 +337,20 @@ export async function listPptMaterialTypes() {
   const page = await parse<{ items: { id?: number; name: string; target: string }[] }>(await fetch(`${base}/keyword-config/material-type?size=100`, { headers: headers() }));
   return page.items;
 }
+export interface PptReminderWindow {
+  daily: boolean;
+  startMinute: number;
+  endMinute: number;
+}
+
 export interface PptFeedbackReminderSettings {
   enabled: boolean;
   cutoff: string;
   intervalMinutes: number;
   weeklyStartMinute: number | null;
   weeklyEndMinute: number | null;
+  notificationEnabled?: boolean;
+  windows?: PptReminderWindow[];
 }
 
 export async function getPptFeedbackReminderSettings(id: number) {
@@ -342,9 +359,12 @@ export async function getPptFeedbackReminderSettings(id: number) {
   );
 }
 
-export async function savePptFeedbackReminderSettings(id: number, settings: PptFeedbackReminderSettings) {
+export async function updatePptNotificationSwitches(
+  id: number,
+  switches: Partial<Pick<PptFeedbackReminderSettings, 'enabled' | 'notificationEnabled'>>,
+) {
   const response = await fetch(`${base}/keyword-config/material-types/${id}/feedback-reminder-settings`, {
-    method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(settings),
+    method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify(switches),
   });
   if (!response.ok) await parse(response);
 }
@@ -624,7 +644,7 @@ export function feedbackAttachmentUrl(id: number, name: string) {
 export async function saveFeedback(id: number, payload: { judgement: string; explanation: string; baseRevision: string }, files: File[] = []) {
   const url = `${base}/findings/${id}/feedback`;
   if (!files.length) {
-    return parse<{ status: string }>(await fetch(url, {
+    return parse<{ status: string; findingStatus?: PptFinding['status'] }>(await fetch(url, {
       method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(payload),
     }));
   }
@@ -634,7 +654,7 @@ export async function saveFeedback(id: number, payload: { judgement: string; exp
   body.append('baseRevision', payload.baseRevision);
   // 截图以重复的 attachments 表单字段上传，说明中的图片占位对应该文件顺序。
   files.forEach(file => body.append('attachments', file));
-  return parse<{ status: string }>(await fetch(url, { method: 'PUT', headers: headers(), body }));
+  return parse<{ status: string; findingStatus?: PptFinding['status'] }>(await fetch(url, { method: 'PUT', headers: headers(), body }));
 }
 
 /** 删除单条事项，历史记录保留。 */

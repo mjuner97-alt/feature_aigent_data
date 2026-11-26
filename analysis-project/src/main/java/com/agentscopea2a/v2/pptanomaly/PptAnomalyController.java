@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -73,6 +74,7 @@ public class PptAnomalyController {
     public PptAnomalyService.SentMailPage sentMailPage(@RequestParam(required = false) Long batchId,
             @RequestParam(required = false) Long versionId,
             @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "true") boolean includeFilters,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireUser(userId);
         if (page < 1 || size < 1 || size > 100 || (batchId != null && batchId < 1)
@@ -80,7 +82,7 @@ public class PptAnomalyController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "无效的通知记录查询参数");
         }
         return service.sentMailPage(batchId, versionId, page, size,
-                service.recordDepartments(userId, canViewAllFeedback(userId)));
+                service.recordDepartments(userId, canViewAllFeedback(userId)), includeFilters);
     }
 
     /** 当前版本的板块负责人分派请求。 */
@@ -253,6 +255,19 @@ public class PptAnomalyController {
         return Map.of("status", "SAVED");
     }
 
+    public record FindingHandlersRequest(String expectedDepartment, List<String> expectedHandlers, List<String> handlers) {}
+
+    @PutMapping("/versions/{versionId}/findings/{findingId}/handlers")
+    public Map<String, String> adjustFindingHandlers(@PathVariable long versionId, @PathVariable long findingId,
+            @RequestBody FindingHandlersRequest request,
+            @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireUser(userId);
+        service.adjustFindingHandlers(versionId, findingId, request.expectedDepartment(), request.expectedHandlers(),
+                request.handlers(), userId);
+        notifier.queueAssignmentNotices();
+        return Map.of("status", "SAVED");
+    }
+
     @DeleteMapping("/versions/{versionId}/findings/{findingId}")
     public Map<String, String> deleteFinding(@PathVariable long versionId, @PathVariable long findingId,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
@@ -282,7 +297,7 @@ public class PptAnomalyController {
             List<PptAnomalyModels.Finding> myPending, List<PptAnomalyModels.Finding> myAssigned,
             Map<Integer, String> originalTitles,
             Map<Long, PptAnomalyService.BoardContact> contacts,
-            Map<Long, List<PptAnomalyService.FeedbackHandler>> handlers) {}
+            Map<Long, List<PptAnomalyService.FeedbackHandler>> handlers, boolean canDownloadOriginal) {}
 
     /** 汇总反馈记录事项、可见事项、登录人的待反馈事项及板块联系人。 */
     @GetMapping("/versions/{versionId}/feedback-directory")
@@ -299,38 +314,37 @@ public class PptAnomalyController {
         String fileName = service.versionFileName(versionId);
         var person = service.ledgerPerson(recordOwner == null ? userId : recordOwner);
         List<String> departments = person == null ? List.of() : person.depts();
-        var visible = service.overview(versionId, null, userId, canViewAll);
         String ownerId = recordOwner == null ? userId : recordOwner;
-        var assigned = service.recordFindings(versionId, ownerId, userId);
+        var findings = service.directoryFindings(versionId, ownerId, userId, canViewAll);
+        var visible = findings.visible();
+        var assigned = findings.assigned();
+        var visibleDepartments = new LinkedHashSet<>(departments);
+        if (!canViewAll) {
+            assigned.forEach(item -> visibleDepartments.addAll(item.departments()));
+        }
         var assignedIds = assigned.stream().map(PptAnomalyModels.Finding::id).collect(Collectors.toSet());
         var departmentFindings = (recordOwner == null || department != null) && canViewAll ? visible
-                : departments.isEmpty() ? assigned : visible.stream()
+                : visibleDepartments.isEmpty() ? assigned : visible.stream()
                 .filter(finding -> assignedIds.contains(finding.id())
-                        || finding.departments().stream().anyMatch(departments::contains)).toList();
+                        || finding.departments().stream().anyMatch(visibleDepartments::contains)).toList();
         if (department != null) {
-            if (!canViewAll && !departments.contains(department)) {
-                // 经办人可能已调整部门，只允许其查看仍分派给本人的事项。
-                var ownDepartmentItems = assigned.stream().filter(item -> item.departments().contains(department)).toList();
-                if (ownDepartmentItems.isEmpty()) {
-                    throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有查看该部门反馈的权限");
-                }
-                departmentFindings = ownDepartmentItems;
+            if (!canViewAll && !visibleDepartments.contains(department)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有查看该部门反馈的权限");
             }
             assigned = assigned.stream().filter(item -> item.departments().contains(department)).toList();
             departmentFindings = departmentFindings.stream().filter(item -> item.departments().contains(department)).toList();
         }
-        var myAssignmentIds = userId.equals(ownerId) ? assignedIds
-                : service.recordFindings(versionId, userId, userId).stream()
-                .map(PptAnomalyModels.Finding::id).collect(Collectors.toSet());
+        var myAssignmentIds = findings.myIds();
         var myAssigned = departmentFindings.stream()
                 .filter(item -> myAssignmentIds.contains(item.id())).toList();
         var myPending = myAssigned.stream()
                 .filter(item -> "PENDING_FEEDBACK".equals(item.status())).toList();
         return new FeedbackDirectory(fileName, service.versionMailLabel(versionId),
-                department == null ? departments : List.of(department), assigned, departmentFindings,
+                department == null ? List.copyOf(visibleDepartments) : List.of(department), assigned, departmentFindings,
                 myPending, myAssigned, includeOriginalTitles ? service.originalSlideTitles(versionId, departmentFindings) : Map.of(),
                 service.feedbackContacts(versionId, assigned, departmentFindings),
-                service.feedbackHandlers(versionId, assigned, departmentFindings));
+                service.feedbackHandlers(versionId, assigned, departmentFindings),
+                service.canDownloadOriginal(versionId, userId));
     }
 
     @GetMapping("/versions/{versionId}/feedback-directory/word")
@@ -361,6 +375,10 @@ public class PptAnomalyController {
             @RequestParam String department,
             @RequestBody FeedbackNotification request,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
+        requireUser(userId);
+        if (!canViewAllFeedback(userId) && !service.recordDepartments(userId, false).contains(department)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有发送该部门反馈结果的权限");
+        }
         var directory = feedbackDirectory(versionId, recordOwner, department, true, userId);
         if (directory.assigned().isEmpty() && directory.departmentFindings().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有可通知的反馈事项");
@@ -376,6 +394,8 @@ public class PptAnomalyController {
         }
         try {
             notifier.sendManual(versionId, directory.materialMailLabel(), department, to, cc, userId);
+        } catch (ResponseStatusException failure) {
+            throw failure;
         } catch (RuntimeException failure) {
             org.slf4j.LoggerFactory.getLogger(PptAnomalyController.class)
                     .error("反馈结果通知失败，版本 {}，部门 {}", versionId, department, failure);
@@ -425,7 +445,7 @@ public class PptAnomalyController {
     @GetMapping("/versions/{versionId}/file")
     public ResponseEntity<Resource> download(@PathVariable long versionId, @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireUser(userId);
-        if (!isProductDepartmentUser(userId, people) && !service.isVersionRecipient(versionId, userId)) {
+        if (!service.canDownloadOriginal(versionId, userId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "没有下载此 PPT 原件的权限");
         }
         var file = service.originalFile(versionId);
@@ -474,8 +494,8 @@ public class PptAnomalyController {
     public Map<String, String> feedback(@PathVariable long findingId, @RequestBody FeedbackRequest request,
                                         @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireUser(userId);
-        service.saveFeedback(findingId, request, userId);
-        return Map.of("status", "SAVED");
+        String findingStatus = service.saveFeedback(findingId, request, userId);
+        return Map.of("status", "SAVED", "findingStatus", findingStatus);
     }
 
     /** 返回权限范围内的 PPT 页面预览图片。 */
@@ -496,8 +516,9 @@ public class PptAnomalyController {
             @RequestPart("attachments") List<MultipartFile> attachments,
             @SessionAttribute(name = AuthController.SESSION_USER, required = false) String userId) {
         requireUser(userId);
-        service.saveFeedback(findingId, new FeedbackRequest(judgement, explanation, baseRevision), attachments, userId);
-        return Map.of("status", "SAVED");
+        String findingStatus = service.saveFeedback(findingId, new FeedbackRequest(judgement, explanation, baseRevision),
+                attachments, userId);
+        return Map.of("status", "SAVED", "findingStatus", findingStatus);
     }
 
     /** 校验附件与反馈记录的关联及访问权限后读取图片。 */

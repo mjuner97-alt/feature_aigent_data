@@ -6,7 +6,7 @@ import type { Directive } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Message } from '@element-plus/icons-vue';
-import { deletePptFinding, downloadFeedbackDirectory, downloadVersion, feedbackDirectory, overviewContext, resolveFeedbackLink,
+import { deletePptFinding, downloadFeedbackDirectory, downloadVersion, feedbackDirectory, feedbackOriginalTitles, overviewContext, resolveFeedbackLink,
   searchPptPeople, sendPptFeedbackNotification, slide, slidePreviewUrl, saveFeedback, pptAnomalyPermissions, PptApiError,
   getPptReportRecipients, type PptReportRecipients } from '../../api/pptAnomaly';
 import { searchSkillUsers } from '../../api/skill';
@@ -52,11 +52,13 @@ const boardContacts = computed(() => directory.value?.contacts ?? {});
 const content = ref<HTMLElement>();
 // undefined 表示正在加载，null 表示没有可用预览。
 const previews = ref(new Map<number, PptSlide | null | undefined>());
+const visibleFeedback = ref(new Set<number>());
 // 草稿按事项主键隔离，批量提交时只处理当前用户具有编辑权限的条目。
 const drafts = ref(new Map<number, FeedbackDraft>());
 const conflicts = ref(new Set<number>());
 const canManage = ref(false);
-const assignmentDialog = ref<{ finding?: PptFinding }>();
+const ownDepartments = ref<string[]>([]);
+const assignmentDialog = ref<{ finding: PptFinding; handlersOnly?: boolean }>();
 const saving = ref(false);
 const downloading = ref(false);
 const exporting = ref(false);
@@ -75,7 +77,6 @@ const feedbackChanges = computed(() => records.value.flatMap(item => {
   return item.editable && draft && !conflicts.value.has(item.id) ? [{ item, ...draft }] : [];
 }));
 const loading = ref(false);
-const contextReady = ref(false);
 const error = ref('');
 const linkNotice = ref('');
 const resolvedVersionId = ref<number>();
@@ -85,7 +86,6 @@ let loadId = 0;
 const linkedVersionId = computed(() => Number(linkParams.value.get('version')));
 const linkedFindingId = computed(() => Number(linkParams.value.get('finding')));
 const requestedVersionId = computed(() => {
-  if (!contextReady.value) return 0;
   if (Number.isSafeInteger(linkedVersionId.value) && linkedVersionId.value > 0) return linkedVersionId.value;
   return (versions.value.find(item => item.myPending > 0) ?? versions.value.find(item => item.mine > 0) ?? versions.value[0])?.id ?? 0;
 });
@@ -158,14 +158,16 @@ const findings = computed(() => {
     item.departments.some(name => directory.value?.departments.includes(name)));
 });
 const notifyDepartments = computed(() => {
-  if (linkedDepartment.value) return [linkedDepartment.value];
-  const own = (directory.value?.departments ?? []).map(name => name.trim()).filter(Boolean);
+  if (linkedDepartment.value) {
+    return canManage.value || ownDepartments.value.includes(linkedDepartment.value) ? [linkedDepartment.value] : [];
+  }
+  const own = ownDepartments.value;
   const linked = records.value.find(item => item.id === resolvedFindingId.value);
   const related = [...new Set((linked ? [linked] : findings.value)
     .flatMap(item => item.departments.map(name => name.trim())).filter(Boolean))];
   if (canManage.value && !recordOwner.value && related.length) return related;
   const matched = own.filter(name => related.includes(name));
-  return [...new Set(matched.length ? matched : own)];
+  return [...new Set(related.length ? matched : own)];
 });
 
 function openNotification() {
@@ -253,11 +255,13 @@ async function submitFeedback(findingId?: number) {
     }
     const failed: PptFinding[] = [];
     const refreshIds = new Set<number>();
+    const saved = new Map<number, PptFinding>();
     for (const { item, explanation, files, baseRevision } of changes) {
       try {
-        await saveFeedback(item.id, { judgement: item.status === 'ADJUSTED' ? 'NON_ANOMALY' : 'CONFIRMED', explanation, baseRevision }, files);
+        const result = await saveFeedback(item.id, { judgement: item.status === 'ADJUSTED' ? 'NON_ANOMALY' : 'CONFIRMED', explanation, baseRevision }, files);
         drafts.value.delete(item.id);
-        refreshIds.add(item.id);
+        if (result.findingStatus) saved.set(item.id, { ...item, status: result.findingStatus });
+        else refreshIds.add(item.id);
       } catch (cause) {
         if (cause instanceof PptApiError && cause.status === 409) {
           conflicts.value.add(item.id);
@@ -265,6 +269,18 @@ async function submitFeedback(findingId?: number) {
         }
         failed.push(item);
       }
+    }
+    const current = directory.value;
+    if (current && saved.size) {
+      const update = (item: PptFinding) => {
+        const updated = saved.get(item.id);
+        return updated ? { ...item, status: updated.status } : item;
+      };
+      const myAssigned = current.myAssigned.map(update);
+      directory.value = {
+        ...current, assigned: current.assigned.map(update), departmentFindings: current.departmentFindings.map(update),
+        myAssigned, myPending: myAssigned.filter(item => item.status === 'PENDING_FEEDBACK'),
+      };
     }
     if (refreshIds.size) await reload(refreshIds);
     if (failed.length) {
@@ -283,12 +299,15 @@ function retryFeedback(id: number, revision: string) {
   void submitFeedback(id);
 }
 
-async function assignmentSaved() {
+function refreshAssignment() {
   assignmentDialog.value = undefined;
-  ElMessage.success('归属已保存');
-  await reload();
+  void reload();
 }
 
+function assignmentSaved() {
+  ElMessage.success(assignmentDialog.value?.handlersOnly ? '经办人已更新' : '归属已保存');
+  refreshAssignment();
+}
 
 async function removeFinding(item: PptFinding) {
   try {
@@ -347,17 +366,21 @@ async function loadPreview(id: number, pageNo: number) {
 }
 watch(versionId, () => { previews.value = new Map(); }, { flush: 'sync' });
 const previewObservers = new WeakMap<HTMLElement, IntersectionObserver>();
-const vPreviewVisible: Directive<HTMLElement, { version: number; page: number }> = {
+const vPreviewVisible: Directive<HTMLElement, { version: number; page: number; finding: number }> = {
   mounted(element, { value }) {
-    if (!('IntersectionObserver' in window)) {
+    const activate = () => {
+      visibleFeedback.value.add(value.finding);
       void loadPreview(value.version, value.page);
+    };
+    if (!('IntersectionObserver' in window)) {
+      activate();
       return;
     }
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry?.isIntersecting || !previewObservers.has(element)) return;
       observer.disconnect();
       previewObservers.delete(element);
-      void loadPreview(value.version, value.page);
+      activate();
     }, { rootMargin: '200px 0px' });
     previewObservers.set(element, observer);
     observer.observe(element);
@@ -404,7 +427,7 @@ async function reload(refreshIds?: ReadonlySet<number>) {
       resolvedVersionNo.value = link.versionNo;
     }
     const reuse = previous && targetVersion === previousVersion ? previous : undefined;
-    const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value, !reuse);
+    const result = await feedbackDirectory(targetVersion, recordOwner.value, linkedDepartment.value, false);
     if (id === loadId) {
       if (reuse) {
         result.originalTitles = reuse.originalTitles;
@@ -416,10 +439,19 @@ async function reload(refreshIds?: ReadonlySet<number>) {
         result.departmentFindings = result.departmentFindings.map(retainUnchanged);
         result.myAssigned = result.myAssigned.map(retainUnchanged);
       }
-      if (!result.myAssigned.length) {
+      const linkedFinding = resolvedFindingId.value;
+      const linkedDepartmentItem = !directory.value && linkedFinding !== undefined
+        && result.departmentFindings.some(item => item.id === linkedFinding)
+        && !result.myAssigned.some(item => item.id === linkedFinding);
+      if (!result.myAssigned.length || linkedDepartmentItem) {
         scope.value = 'all';
       }
       directory.value = result;
+      if (!result.originalTitles || !Object.keys(result.originalTitles).length) {
+        void feedbackOriginalTitles(targetVersion).then(titles => {
+          if (id === loadId && directory.value) directory.value.originalTitles = titles;
+        }).catch(() => {});
+      }
     }
   } catch {
     if (id === loadId) {
@@ -434,6 +466,7 @@ async function reload(refreshIds?: ReadonlySet<number>) {
 watch([requestedVersionId, linkedFindingId, linkedDepartment, historical, exactVersion, recordOwner, recordMode], () => {
   scope.value = 'myAssigned';
   directory.value = undefined;
+  visibleFeedback.value.clear();
   drafts.value.clear();
   conflicts.value.clear();
   assignmentDialog.value = undefined;
@@ -442,7 +475,7 @@ watch([requestedVersionId, linkedFindingId, linkedDepartment, historical, exactV
   resolvedFindingId.value = undefined;
   saveError.value = '';
   void reload();
-});
+}, { immediate: true });
 watch([findings, resolvedFindingId, scope], ([items, findingId, currentScope], [, previousId, previousScope]) => {
   const linked = items.find(item => item.id === findingId);
   const next = (findingId !== previousId || !selected.value ? linked : undefined)
@@ -458,16 +491,19 @@ function openNotificationHistory() {
   return router.push({ path: '/ppt-anomaly/overview', query: { department: linkedDepartment.value }, hash: '#' + params });
 }
 onMounted(async () => {
-  void pptAnomalyPermissions().then(permissions => { canManage.value = permissions.canManageMaterials; }).catch(() => {});
+  void pptAnomalyPermissions().then(permissions => {
+    canManage.value = permissions.canManageMaterials;
+    ownDepartments.value = permissions.departments;
+  }).catch(() => {});
+  if (requestedVersionId.value) return;
   loading.value = true;
   try {
     const context = await overviewContext();
     versions.value = context.versions;
-    contextReady.value = true;
   } catch {
-    error.value = '无法加载材料版本和部门信息';
+    if (!requestedVersionId.value) error.value = '无法加载材料版本和部门信息';
   } finally {
-    if (!loadId) loading.value = false;
+    if (!requestedVersionId.value) loading.value = false;
   }
 });
 </script>
@@ -486,7 +522,7 @@ onMounted(async () => {
           :loading="notifyLoading" @click="openNotification">通知</el-button>
         <el-button v-if="findings.length && !error" :disabled="loading" :loading="exporting"
           @click="exportFeedback">导出</el-button>
-        <el-button v-if="versionId && !error" :loading="downloading" :disabled="loading" @click="downloadOriginal">下载原件</el-button>
+        <el-button v-if="directory?.canDownloadOriginal && !error" :loading="downloading" :disabled="loading" @click="downloadOriginal">下载原件</el-button>
       </div>
     </header>
     <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" />
@@ -528,17 +564,19 @@ onMounted(async () => {
             </div>
             <div class="finding-actions">
               <span class="feedback-status">{{ feedbackStatuses[item.status] || '-' }}</span>
+              <el-button v-if="item.canAdjustHandlers && !readOnly" link type="primary" :disabled="saving || drafts.has(item.id)"
+                @click="assignmentDialog = { finding: item, handlersOnly: true }">调整经办人</el-button>
               <el-button v-if="canManage && !readOnly" link type="primary" :disabled="saving || drafts.has(item.id)"
                 @click="assignmentDialog = { finding: item }">调整归属</el-button>
               <el-button v-if="canManage && !readOnly" link type="danger" :disabled="saving || loading"
                 @click="removeFinding(item)">删除事项</el-button>
             </div>
           </header>
-          <div :key="`${versionId}:${item.pageNo}`" v-preview-visible="{ version: versionId, page: item.pageNo }">
+          <div :key="`${versionId}:${item.pageNo}`" v-preview-visible="{ version: versionId, page: item.pageNo, finding: item.id }">
             <PptSlideViewer :page-no="item.pageNo" :slide="previews.get(item.pageNo) ?? undefined"
               :unavailable="previews.get(item.pageNo) === null" />
           </div>
-          <PptFeedbackForm
+          <PptFeedbackForm v-if="visibleFeedback.has(item.id) || selected?.id === item.id"
             :finding="item" :draft="drafts.get(item.id)" :saving="saving"
             :compact="readOnly" :read-only="readOnly" :conflict="conflicts.has(item.id)"
             @draft="setDraft(item.id, $event)" @save="submitFeedback(item.id)" @retry="retryFeedback(item.id, $event)" />
@@ -556,8 +594,9 @@ onMounted(async () => {
       </section>
     </main>
     <PptAssignmentDialog v-if="assignmentDialog" :version-id="versionId" :finding="assignmentDialog.finding"
-      :handlers="assignmentDialog.finding ? handlersFor(assignmentDialog.finding.id) : []"
-      @close="assignmentDialog = undefined" @saved="assignmentSaved" />
+      :handlers="handlersFor(assignmentDialog.finding.id)"
+      :fixed-department="assignmentDialog.handlersOnly ? assignmentDialog.finding.departments[0] : undefined"
+      @close="assignmentDialog = undefined" @saved="assignmentSaved" @reload="refreshAssignment" />
     <el-dialog v-model="notifyDepartmentOpen" title="选择通知部门" width="min(420px, 94vw)" append-to-body
       :show-close="!notifyLoading" :close-on-click-modal="false" :close-on-press-escape="!notifyLoading">
       <el-select v-model="notifyDepartment" filterable placeholder="请选择部门" aria-label="通知部门"

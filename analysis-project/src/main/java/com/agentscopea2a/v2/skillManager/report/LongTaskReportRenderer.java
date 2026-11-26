@@ -2,18 +2,27 @@ package com.agentscopea2a.v2.skillManager.report;
 
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * 长任务专用报告渲染器。
  *
- * <p>Python 节点通常返回完整 HTML 文档。汇总时只保留 body 内容和安全样式，
- * 去掉 html/head/body 外壳，避免节点自己的页面尺寸污染汇总布局；其余 Markdown、表格、ECharts
- * 和安全清理逻辑继续复用 HtmlReportRenderer。
+ * <p>汇总标题留在主文档，节点正文独立渲染。Markdown、HTML 和 ECharts 复用 HtmlReportRenderer。
  */
 @Component
 public class LongTaskReportRenderer {
+    public record ReportPart(String content, boolean node) {
+        public static ReportPart heading(String content) {
+            return new ReportPart(content, false);
+        }
+
+        public static ReportPart node(String content) {
+            return new ReportPart(content, true);
+        }
+    }
+
     private static final Pattern HTML_DOCUMENT = Pattern.compile(
             "(?is)<!doctype\\s+html\\b[\\s\\S]*?</html\\s*>|<html\\b[\\s\\S]*?</html\\s*>");
     private static final Pattern BODY = Pattern.compile("(?is)<body\\b[^>]*>([\\s\\S]*?)</body\\s*>");
@@ -35,12 +44,11 @@ public class LongTaskReportRenderer {
         return delegate.render(normalized, title);
     }
 
-    public String renderWithoutFullscreen(String content, String title) {
-        String normalized = normalizeCompleteHtml(content == null ? "" : content);
-        return delegate.renderWithoutFullscreen(normalized, title);
+    public String renderWithoutFullscreen(List<ReportPart> parts, String title) {
+        return delegate.renderLongTaskSummary(parts, title);
     }
 
-    private String normalizeCompleteHtml(String input) {
+    static String normalizeCompleteHtml(String input) {
         // 保留每个完整 HTML 文档的边界，让 HtmlReportRenderer 走 iframe 隔离路径。
         // 不能先把多个文档压成一个 body，否则节点 CSS 会互相覆盖。
         return STYPE.matcher(input).replaceAll("<style>$1</style>");

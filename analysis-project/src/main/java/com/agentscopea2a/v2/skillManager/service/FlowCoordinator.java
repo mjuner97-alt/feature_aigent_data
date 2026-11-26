@@ -397,10 +397,6 @@ public class FlowCoordinator {
                 .startedAt(started)
                 .build();
             mapper.insertAttempt(audit);
-            // 状态流转放 try 内:流转失败(如缺列)时走失败路径留下错误信息,而不是静默把节点卡成僵尸 RUNNING
-            flow.setStatus(FlowExecutionStatus.RUNNING);
-            if (flow.getStartedAt() == null) flow.setStartedAt(started);
-            mapper.updateExecution(flow);
             stage = "BUILD_PROMPT";
             boolean scriptNode = node.getScriptId() != null && !node.getScriptId().isBlank();
             String template = node.getQuestionTemplateSnapshot();
@@ -628,7 +624,7 @@ public class FlowCoordinator {
                         errorMessage,
                         LocalDateTime.now(clock)
                     );
-                    if (completed && !retryable) {
+                    if (completed && (!retryable || node.getStatus() == FlowNodeExecutionStatus.CANCELLED)) {
                         advance(flow.getId());
                     } else if (!completed) {
                         log.info("Ignoring stale failure for node {} attempt {}", nodeId, attempt);
@@ -745,6 +741,10 @@ public class FlowCoordinator {
             FlowCompletionService.Summary summary = completionService.summarize(flow, safeNodeList);
             flow.setSummaryJson(summary.summaryJson());
             flow.setReportPath(summary.reportPath());
+            if (flow.getTriggerType() == FlowTriggerType.AUTO_METRIC &&
+                flow.getStatus() == FlowExecutionStatus.SUCCESS && summary.reportPath() == null) {
+                flow.setStatus(FlowExecutionStatus.FAILED);
+            }
         } catch (RuntimeException e) {
             // 汇总失败不吞掉执行结果:summary 里保留各节点状态明细
             FlowFailureDiagnostic diagnostic = FlowFailureDiagnostic.capture(e, "GENERATE_SUMMARY", flow.getId(), null);
@@ -813,9 +813,7 @@ public class FlowCoordinator {
         SkillFlowExecution retryCandidate = mapper.selectFlowExecutionById(flowId);
         if (retryCandidate != null && retryCandidate.getBatchId() != null) teamReports.checkRetry(retryCandidate);
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        if (
-            flow != null && flow.getBatchId() == null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC
-        ) throw new IllegalStateException("自动触发的长任务不支持手动重跑");
+        requireRetryableAutomaticExecution(flow);
         if (
             flow == null ||
             flow.getStatus() == null ||
@@ -830,6 +828,11 @@ public class FlowCoordinator {
         if (
             nodes.stream().anyMatch(n -> n.getStatus() == null || !n.getStatus().terminal())
         ) throw new IllegalStateException("节点尚未全部结束");
+        if (
+            flow.getTriggerType() == FlowTriggerType.AUTO_METRIC &&
+            ((flow.getReportPath() != null && !flow.getReportPath().isBlank()) ||
+                nodes.stream().anyMatch(n -> n.getStatus() != FlowNodeExecutionStatus.SUCCESS))
+        ) throw new IllegalStateException("自动执行仅在节点全部成功且报告未生成时可重新生成汇总");
         flow.setStatus(FlowExecutionStatus.SUMMARIZING);
         flow.setSummaryJson(null);
         flow.setReportPath(null);
@@ -856,9 +859,7 @@ public class FlowCoordinator {
         SkillFlowExecution retryCandidate = mapper.selectFlowExecutionById(flowId);
         if (retryCandidate != null && retryCandidate.getBatchId() != null) teamReports.checkRetry(retryCandidate);
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        if (flow != null && flow.getBatchId() == null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC) {
-            throw new IllegalStateException("FlowValidationFailed: 自动执行的长任务不支持单节点重跑");
-        }
+        requireRetryableAutomaticExecution(flow);
         SkillFlowNodeExecution node = mapper.selectNodeExecution(nodeId);
         // 同时校验节点归属，防止拿其他流程的 nodeId 发起重跑。
         if (
@@ -871,6 +872,9 @@ public class FlowCoordinator {
         ) throw new IllegalStateException("执行当前不可重跑");
         // 仅终态节点可重跑，避免覆盖正在运行节点的租约、结果或尝试次数。
         if (!hasTerminalStatus(node)) throw new IllegalStateException("节点当前不可重跑");
+        if (flow.getTriggerType() == FlowTriggerType.AUTO_METRIC && !isFailedOrBlocked(node)) {
+            throw new IllegalStateException("自动执行仅允许重跑失败或阻塞的节点");
+        }
         // 清空上次执行的结果、错误、时间和租约，并恢复完整重试预算。
         resetForRetry(node);
         // 手动重跑单个节点 = 明确要求重新执行,绕过节点缓存(否则会直接秒回上次的缓存结果)。
@@ -902,18 +906,14 @@ public class FlowCoordinator {
         SkillFlowExecution retryCandidate = mapper.selectFlowExecutionById(flowId);
         if (retryCandidate != null && retryCandidate.getBatchId() != null) teamReports.checkRetry(retryCandidate);
         SkillFlowExecution flow = mapper.selectFlowExecutionForUpdate(flowId);
-        if (
-            flow != null && flow.getBatchId() == null && flow.getTriggerType() == FlowTriggerType.AUTO_METRIC
-        ) throw new IllegalStateException("自动触发的长任务不支持手动重跑");
+        requireRetryableAutomaticExecution(flow);
         if (
             flow == null ||
             (flow.getStatus() != FlowExecutionStatus.FAILED && flow.getStatus() != FlowExecutionStatus.PARTIAL_SUCCESS)
         ) throw new IllegalStateException("执行当前不可批量重跑");
         List<SkillFlowNodeExecution> failed = safeNodes(mapper.selectNodeExecutions(flowId))
             .stream()
-            .filter(
-                n -> n.getStatus() == FlowNodeExecutionStatus.FAILED || n.getStatus() == FlowNodeExecutionStatus.BLOCKED
-            )
+            .filter(FlowCoordinator::isFailedOrBlocked)
             .toList();
         if (failed.isEmpty()) throw new IllegalStateException("没有可重跑的失败任务");
         for (SkillFlowNodeExecution node : failed) {
@@ -932,6 +932,17 @@ public class FlowCoordinator {
         dispatchRunnableNodes();
         scheduleRetryDispatch();
         return failed.size();
+    }
+
+    private static void requireRetryableAutomaticExecution(SkillFlowExecution flow) {
+        if (flow == null || flow.getTriggerType() != FlowTriggerType.AUTO_METRIC) return;
+        if (flow.getStatus() != FlowExecutionStatus.FAILED && flow.getStatus() != FlowExecutionStatus.PARTIAL_SUCCESS) {
+            throw new IllegalStateException("自动触发的长任务仅允许恢复失败或部分成功的执行");
+        }
+    }
+
+    private static boolean isFailedOrBlocked(SkillFlowNodeExecution node) {
+        return node.getStatus() == FlowNodeExecutionStatus.FAILED || node.getStatus() == FlowNodeExecutionStatus.BLOCKED;
     }
 
     /** 重置节点为待执行:清空结果/错误/租约,并归零尝试次数,让重跑重新获得完整的重试预算。 */

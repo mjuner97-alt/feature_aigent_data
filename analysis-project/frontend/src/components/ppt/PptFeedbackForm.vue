@@ -76,7 +76,7 @@ watch([editor, () => props.finding], async ([element, finding], _, onCleanup) =>
       element.innerHTML = decodeFeedback(props.draft.explanation, index => images.get(ids[index])?.url ?? null);
       return;
     }
-    const history = await feedbackHistory(finding.id);
+    const history = await feedbackHistory(finding.id, controller.signal);
     if (controller.signal.aborted) return;
     baseRevision.value = history.baseRevision;
     details.value = toPptTitleDetails(history.detailLinks ?? []);

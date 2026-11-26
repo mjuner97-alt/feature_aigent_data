@@ -5,8 +5,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { isPptRecognitionMode, listPptMaterialIgnoreRules, listPptReportDepartments, savePptMaterialIgnoreRules, pptAnomalyPermissions, pptManualRecognitionOptions, pptRecognitionModes as modes, searchPptPeople, type PptMaterialIgnoreRule, type PptPerson, type PptRecognitionScope } from '../../api/pptAnomaly';
-import { savePptFeedbackReminderSettings, type PptFeedbackReminderSettings } from '../../api/pptAnomaly';
-import { Clock, Document, Download, Search, UploadFilled } from '@element-plus/icons-vue';
+import { updatePptNotificationSwitches, type PptFeedbackReminderSettings, type PptReminderWindow } from '../../api/pptAnomaly';
+import { Clock, Document, Download, Plus, Search, UploadFilled } from '@element-plus/icons-vue';
 import PptListFilterBar from '../../components/ppt/PptListFilterBar.vue';
 import PptFeedbackSupervisorConfig from '../../components/ppt/PptFeedbackSupervisorConfig.vue';
 import PptRecognitionSettings from '../../components/ppt/PptRecognitionSettings.vue';
@@ -91,25 +91,21 @@ const defaultReminderSettings: PptFeedbackReminderSettings = {
   intervalMinutes: 60,
   weeklyStartMinute: null,
   weeklyEndMinute: null,
+  notificationEnabled: true,
 };
 
 onMounted(loadPermissions);
 
-async function updateReminderSettings(id: number, changes: Partial<PptFeedbackReminderSettings>) {
-  const hadSettings = !!reminderSettings.value[id];
-  const current = reminderSettings.value[id] ?? { ...defaultReminderSettings };
+async function updateNotificationSwitch(id: number, field: 'enabled' | 'notificationEnabled', value: boolean) {
   if (savingReminderRows.has(id) || !canMaintain('material-type')) return;
-  const updated = { ...current, ...changes };
-  if (hadSettings && updated.enabled === current.enabled && updated.cutoff === current.cutoff
-      && updated.intervalMinutes === current.intervalMinutes
-      && updated.weeklyStartMinute === current.weeklyStartMinute
-      && updated.weeklyEndMinute === current.weeklyEndMinute) return;
+  const current = reminderSettings.value[id];
+  if (current && (current[field] ?? true) === value) return;
 
   savingReminderRows.add(id);
-  reminderSettings.value[id] = updated;
+  reminderSettings.value[id] = { ...(current ?? defaultReminderSettings), [field]: value };
   try {
-    await savePptFeedbackReminderSettings(id, updated);
-    return true;
+    await updatePptNotificationSwitches(id, { [field]: value });
+    if (active.value === 'material-type') await load();
   } catch (error) {
     reminderSettings.value[id] = current;
     ElMessage.error(String(error));
@@ -124,16 +120,28 @@ function clockText(minute: number) {
   return [Math.floor(withinDay / 60), withinDay % 60].map(value => String(value).padStart(2, '0')).join(':');
 }
 
-function scheduleText(settings?: PptFeedbackReminderSettings) {
-  if (!settings) return '—';
+function reminderWindows(settings: PptFeedbackReminderSettings): PptReminderWindow[] {
+  if (settings.windows?.length) return settings.windows;
   const { weeklyStartMinute: start, weeklyEndMinute: end, cutoff } = settings;
-  if (start == null || end == null) return `每天 10:00 – ${cutoff}`;
-  return `${weekdays[Math.floor(start / 1440)]} ${clockText(start)} – ${weekdays[Math.floor(end / 1440)]} ${clockText(end)}`;
+  if (start != null && end != null) return [{ daily: false, startMinute: start, endMinute: end }];
+  return [{ daily: true, startMinute: 600, endMinute: weekMinute(0, cutoff) }];
+}
+
+function scheduleText({ daily, startMinute, endMinute }: PptReminderWindow) {
+  if (daily) return `每天 ${clockText(startMinute)} – ${endMinute < startMinute ? '次日 ' : ''}${clockText(endMinute)}`;
+  const start = `${weekdays[Math.floor(startMinute / 1440)]} ${clockText(startMinute)}`;
+  const end = endMinute < startMinute ? '当周结束' : `${weekdays[Math.floor(endMinute / 1440)]} ${clockText(endMinute)}`;
+  return `${start} – ${end}`;
 }
 
 function weekMinute(day: number, time: string) {
   const [hour, minute] = time.split(':').map(Number);
   return day * 1440 + hour * 60 + minute;
+}
+
+function notificationWindowsOverlap(windows: PptReminderWindow[]) {
+  const sorted = [...windows].sort((left, right) => left.startMinute - right.startMinute);
+  return sorted.some((range, index) => index > 0 && range.startMinute < sorted[index - 1].endMinute);
 }
 
 watch(() => route.query.tab, () => {
@@ -219,15 +227,32 @@ const ruleMaterialType = ref('');
 const ignoreRules = ref<PptMaterialIgnoreRule[]>([]);
 const newRule = ref<PptMaterialIgnoreRule>({ ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true });
 const materialEditorRules = ref<PptMaterialIgnoreRule[]>([]);
+const materialEditorRulesState = ref<'ready' | 'loading' | 'failed'>('ready');
+let materialEditorRulesRequest = 0;
 const materialEditorNewRule = ref<PptMaterialIgnoreRule>({ ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true });
-const materialEditorReminder = reactive<PptFeedbackReminderSettings>({
-  enabled: true, cutoff: '18:00', intervalMinutes: 60, weeklyStartMinute: null, weeklyEndMinute: null,
-});
+const materialEditorReminder = reactive({ ...defaultReminderSettings, notificationEnabled: true });
 const materialEditorWeekly = ref(false);
-const materialEditorStartDay = ref(0);
-const materialEditorStartTime = ref('10:00');
-const materialEditorEndDay = ref(4);
-const materialEditorEndTime = ref('18:00');
+type ReminderWindowForm = { id: number; startDay: number; startTime: string; endDay: number; endTime: string };
+const materialEditorWindows = ref<ReminderWindowForm[]>([]);
+const materialEditorWindowValues = computed(() => materialEditorWindows.value.map(window => ({
+  daily: !materialEditorWeekly.value,
+  startMinute: weekMinute(materialEditorWeekly.value ? window.startDay : 0, window.startTime || ''),
+  endMinute: weekMinute(materialEditorWeekly.value ? window.endDay : 0, window.endTime || ''),
+})));
+const windowTimeErrors = computed(() => materialEditorWindowValues.value.map(({ startMinute, endMinute }) => {
+  if (!Number.isInteger(startMinute) || !Number.isInteger(endMinute)) return '请填写完整通知时段';
+  return startMinute >= endMinute ? '开始时间必须早于结束时间' : '';
+}));
+let reminderWindowId = 0;
+
+function addReminderWindow() {
+  const error = windowTimeErrors.value.find(Boolean);
+  if (error) {
+    ElMessage.warning(error);
+    return;
+  }
+  materialEditorWindows.value.push({ id: ++reminderWindowId, startDay: 0, startTime: '10:00', endDay: 0, endTime: '18:00' });
+}
 function addIgnoreRule() {
   if (!newRule.value.ruleValue.trim()) return;
   ignoreRules.value.push({ ...newRule.value, ruleValue: newRule.value.ruleValue.trim(), ruleScope: newRule.value.ruleType === 'CHAPTER' ? 'SECTION' : 'PAGE' });
@@ -245,22 +270,18 @@ function addMaterialEditorRule() {
 }
 
 function resetMaterialEditorReminder() {
-  Object.assign(materialEditorReminder, {
-    enabled: true, cutoff: '18:00', intervalMinutes: 60,
-    weeklyStartMinute: null, weeklyEndMinute: null,
-  });
+  Object.assign(materialEditorReminder, defaultReminderSettings);
   materialEditorWeekly.value = false;
-  materialEditorStartDay.value = 0;
-  materialEditorStartTime.value = '10:00';
-  materialEditorEndDay.value = 4;
-  materialEditorEndTime.value = '18:00';
+  materialEditorWindows.value = [];
+  addReminderWindow();
 }
 
 function materialEditorReminderPayload(): PptFeedbackReminderSettings {
   return {
     ...materialEditorReminder,
-    weeklyStartMinute: materialEditorWeekly.value ? weekMinute(materialEditorStartDay.value, materialEditorStartTime.value) : null,
-    weeklyEndMinute: materialEditorWeekly.value ? weekMinute(materialEditorEndDay.value, materialEditorEndTime.value) : null,
+    weeklyStartMinute: null,
+    weeklyEndMinute: null,
+    windows: materialEditorWindowValues.value,
   };
 }
 
@@ -349,7 +370,7 @@ async function load() {
       if (active.value === 'material-type') {
         const settings: (PptFeedbackReminderSettings & { id: number })[] = result.reminderSettings ?? [];
         reminderSettings.value = Object.fromEntries(settings.map(({ id, ...values }) => [
-          id, savingReminderRows.has(id) ? reminderSettings.value[id] : values,
+          id, savingReminderRows.has(id) ? reminderSettings.value[id] : { ...values, windows: result.reminderWindows?.[id] ?? [] },
         ]));
       }
     }
@@ -452,23 +473,32 @@ function edit(entry?: Entry) {
   editKind.value = active.value;
   form.value = entry ? { ...entry } : { name: '', target: '' };
   materialEditorRules.value = [];
+  materialEditorRulesState.value = 'ready';
+  const rulesRequest = ++materialEditorRulesRequest;
   materialEditorNewRule.value = { ruleType: 'KEYWORD', ruleValue: '', ruleScope: 'PAGE', enabled: true };
   resetMaterialEditorReminder();
   if (active.value === 'material-type' && entry?.id != null) {
     const settings = reminderSettings.value[entry.id];
     if (settings) {
-      Object.assign(materialEditorReminder, settings);
-      materialEditorWeekly.value = settings.weeklyStartMinute != null && settings.weeklyEndMinute != null;
-      const start = settings.weeklyStartMinute ?? 600;
-      const end = settings.weeklyEndMinute ?? 6840;
-      materialEditorStartDay.value = Math.floor(start / 1440);
-      materialEditorStartTime.value = clockText(start);
-      materialEditorEndDay.value = Math.floor(end / 1440);
-      materialEditorEndTime.value = clockText(end);
+      Object.assign(materialEditorReminder, settings, { notificationEnabled: settings.notificationEnabled !== false });
+      const windows = reminderWindows(settings);
+      materialEditorWeekly.value = !windows[0].daily;
+      materialEditorWindows.value = windows.map(({ startMinute, endMinute }) => ({
+        id: ++reminderWindowId,
+        startDay: Math.floor(startMinute / 1440), startTime: clockText(startMinute),
+        endDay: Math.floor(endMinute / 1440), endTime: clockText(endMinute),
+      }));
     }
   }
   if (active.value === 'material-type' && entry) {
-    void listPptMaterialIgnoreRules(entry.name).then(rules => { materialEditorRules.value = rules; }).catch(() => { materialEditorRules.value = []; });
+    materialEditorRulesState.value = 'loading';
+    void listPptMaterialIgnoreRules(entry.name).then(rules => {
+      if (rulesRequest !== materialEditorRulesRequest) return;
+      materialEditorRules.value = rules;
+      materialEditorRulesState.value = 'ready';
+    }).catch(() => {
+      if (rulesRequest === materialEditorRulesRequest) materialEditorRulesState.value = 'failed';
+    });
   }
   editorOpen.value = true;
 }
@@ -536,14 +566,19 @@ async function save() {
     ElMessage.warning('请选择板块联系人');
     return;
   }
-  if (isMaterialType && !entry.id) {
-    const reminder = materialEditorReminderPayload();
-    if (materialEditorWeekly.value && reminder.weeklyStartMinute === reminder.weeklyEndMinute) {
-      ElMessage.warning('请选择不同的每周提醒开始和结束时间');
+  const reminder = isMaterialType ? materialEditorReminderPayload() : undefined;
+  if (reminder) {
+    const error = windowTimeErrors.value.find(Boolean);
+    if (error) {
+      ElMessage.warning(error);
       return;
     }
-    if (reminder.intervalMinutes < 1 || reminder.cutoff <= '10:00') {
-      ElMessage.warning('提醒截止时间须晚于 10:00，提醒间隔须为正整数');
+    if (reminder.windows && notificationWindowsOverlap(reminder.windows)) {
+      ElMessage.warning('通知时段不能重叠，请调整后再保存');
+      return;
+    }
+    if (!Number.isInteger(reminder.intervalMinutes) || reminder.intervalMinutes < 1) {
+      ElMessage.warning('提醒间隔须为正整数分钟');
       return;
     }
   }
@@ -557,21 +592,16 @@ async function save() {
   const recognition = isTitle ? recognitionEditor.value?.prepareSave() : undefined;
   if (isTitle && !recognition) return;
   const payload = isTitle ? { ...titleForm.value, ...recognitionScope.value, scanRules: recognition?.changedRules }
-    : isBoard ? boardForm.value : entry;
+    : isBoard ? boardForm.value : isMaterialType
+      ? { name: entry.name, reminder, ignoreRules: materialEditorRulesState.value === 'ready' ? materialEditorRules.value : undefined }
+      : entry;
   saving.value = true;
   try {
-    const path = isTitle ? '/titles' : isBoard ? '/boards' : `/${editKind.value}` + (entry.id ? '/' + entry.id : '');
+    const path = isTitle ? '/titles' : isBoard ? '/boards'
+      : `/${isMaterialType ? 'material-types' : editKind.value}` + (entry.id ? '/' + entry.id : '');
     await request(path, {
       method: !isTitle && !isBoard && entry.id ? 'PUT' : 'POST', body: JSON.stringify(payload),
     });
-    if (isMaterialType) await savePptMaterialIgnoreRules(entry.name.trim(), materialEditorRules.value);
-    if (isMaterialType && entry.id != null) {
-      await savePptFeedbackReminderSettings(entry.id, materialEditorReminderPayload());
-    } else if (isMaterialType) {
-      await load();
-      const created = rows.value.find(row => row.name === entry.name.trim());
-      if (created?.id != null) await savePptFeedbackReminderSettings(created.id, materialEditorReminderPayload());
-    }
     editorOpen.value = false;
     ElMessage.success('已保存');
     await load();
@@ -677,25 +707,36 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
         </el-table>
         <el-table v-else v-loading="loading" :data="rows" row-key="id">
           <el-table-column prop="name" :label="active === 'material-type' ? '材料类型' : '匹配关键词'" min-width="180" />
-          <el-table-column v-if="active === 'material-type'" label="提醒时段" min-width="286">
+          <el-table-column v-if="active === 'material-type'" label="通知时段" min-width="286">
             <template #default="{ row }">
-              <span class="schedule-display">
-                <el-icon v-if="reminderSettings[row.id]"><Clock /></el-icon>
-                <span>{{ scheduleText(reminderSettings[row.id]) }}</span>
-                <span v-if="reminderSettings[row.id]" class="schedule-interval-summary">
+              <div v-if="reminderSettings[row.id]">
+                <div v-for="window in reminderWindows(reminderSettings[row.id]!)" :key="`${window.startMinute}-${window.endMinute}`" class="schedule-display">
+                  <el-icon><Clock /></el-icon> {{ scheduleText(window) }}
+                </div>
+                <span class="schedule-interval-summary">
                   {{ reminderSettings[row.id]?.intervalMinutes }} 分钟/次
                 </span>
-              </span>
+              </div>
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="active === 'material-type'" label="通知总开关" width="108" align="center">
+            <template #default="{ row }">
+              <el-switch v-if="reminderSettings[row.id]" :model-value="reminderSettings[row.id]?.notificationEnabled !== false"
+                :loading="savingReminderRows.has(row.id)" :disabled="!canMaintainActive"
+                :aria-label="`${row.name}通知总开关`"
+                @change="(value: unknown) => updateNotificationSwitch(row.id, 'notificationEnabled', value === true)" />
+              <span v-else>—</span>
             </template>
           </el-table-column>
           <el-table-column v-if="active === 'material-type'" label="自动逾期提醒" width="118" align="center">
             <template #default="{ row }">
               <el-switch v-if="reminderSettings[row.id]" :model-value="reminderSettings[row.id]?.enabled"
-                :loading="savingReminderRows.has(row.id)" :disabled="!canMaintainActive"
+                :loading="savingReminderRows.has(row.id)" :disabled="!canMaintainActive || reminderSettings[row.id]?.notificationEnabled === false"
                 :aria-label="`${row.name}自动逾期提醒`"
-                @change="(value: unknown) => updateReminderSettings(row.id, { enabled: value === true })" />
+                @change="(value: unknown) => updateNotificationSwitch(row.id, 'enabled', value === true)" />
               <el-button v-else-if="canMaintainActive" link type="primary" :loading="savingReminderRows.has(row.id)"
-                :aria-label="`${row.name}设置自动逾期提醒`" @click="updateReminderSettings(row.id, { enabled: true })">—</el-button>
+                :aria-label="`${row.name}设置自动逾期提醒`" @click="updateNotificationSwitch(row.id, 'enabled', true)">—</el-button>
               <span v-else>—</span>
             </template>
           </el-table-column>
@@ -772,11 +813,13 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
       v-model="editorOpen"
       :title="`${!canMaintainEditor ? '查看' : (isTitleEditor ? titleForm.originalName !== undefined : editKind === 'board' ? !boardForm.create : form.id) ? '编辑' : '新增'}${tab.label}`"
       class="ppt-dialog"
-      :width="isTitleEditor ? 'min(680px, 94vw)' : 'min(540px, 94vw)'"
+      :class="{ 'material-type-editor': editKind === 'material-type' }"
+      :width="editKind === 'material-type' ? 'min(760px, 94vw)' : isTitleEditor ? 'min(680px, 94vw)' : 'min(540px, 94vw)'"
       align-center append-to-body destroy-on-close
       :show-close="!saving" :close-on-press-escape="!saving" :close-on-click-modal="false"
     >
-      <el-form label-position="top" :disabled="saving || !canMaintainEditor" @submit.prevent="save">
+      <el-form :id="editKind === 'material-type' ? 'material-type-form' : undefined"
+        label-position="top" :disabled="saving || !canMaintainEditor" @submit.prevent="save">
         <template v-if="editKind === 'section'">
           <el-form-item label="页面标题" required><el-input v-model="titleForm.name" maxlength="512" /></el-form-item>
           <PptRecognitionSettings v-if="editorOpen" ref="recognitionEditor" v-model="recognitionScope"
@@ -826,7 +869,7 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
               </div>
               <el-tag size="small" type="info">{{ materialEditorRules.length }} 条</el-tag>
             </div>
-            <div class="inline-rule-add">
+            <div v-if="materialEditorRulesState === 'ready'" class="inline-rule-add">
               <el-select v-model="materialEditorNewRule.ruleType" aria-label="规则类型">
                 <el-option label="关键词" value="KEYWORD" />
                 <el-option label="章节编号" value="CHAPTER" />
@@ -844,44 +887,58 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
                 <el-button link type="danger" @click="materialEditorRules.splice(index, 1)">删除</el-button>
               </div>
             </div>
-            <div v-else class="inline-rule-empty">暂未设置忽略规则，上传时会完整识别。</div>
+            <div v-else class="inline-rule-empty">{{ materialEditorRulesState === 'ready' ? '暂未设置忽略规则，上传时会完整识别。'
+              : materialEditorRulesState === 'loading' ? '正在加载忽略规则…' : '忽略规则加载失败，可重新打开编辑窗口。' }}</div>
             <div class="material-reminder-editor">
-              <div class="inline-rule-header">
+              <div class="notification-heading">
                 <div>
-                  <strong>逾期提醒</strong>
-                  <span>可选，保存材料类型时一起保存</span>
+                  <strong>通知设置</strong>
+                  <span>总开关控制此类型的自动和手动邮件</span>
                 </div>
-                <span class="reminder-editor-note">自动开关可在列表中控制</span>
+                <el-switch v-model="materialEditorReminder.notificationEnabled" aria-label="通知总开关"
+                  inline-prompt active-text="开启" inactive-text="关闭" />
               </div>
               <div class="reminder-editor-fields">
-                <el-radio-group v-model="materialEditorWeekly" aria-label="提醒周期">
-                  <el-radio-button :value="false">每天</el-radio-button>
-                  <el-radio-button :value="true">每周</el-radio-button>
-                </el-radio-group>
-                <template v-if="materialEditorWeekly">
-                  <div class="schedule-endpoint">
-                    <span>开始</span>
-                    <el-select v-model="materialEditorStartDay" aria-label="开始星期">
-                      <el-option v-for="(day, index) in weekdays" :key="`start-${day}`" :label="day" :value="index" />
-                    </el-select>
-                    <el-time-picker v-model="materialEditorStartTime" format="HH:mm" value-format="HH:mm" :clearable="false" aria-label="开始时间" />
+                <div class="notification-period">
+                  <div>
+                    <strong>通知时段</strong>
+                    <small>仅在报告上传当周发送，按北京时间计算</small>
                   </div>
-                  <div class="schedule-endpoint">
-                    <span>结束</span>
-                    <el-select v-model="materialEditorEndDay" aria-label="结束星期">
-                      <el-option v-for="(day, index) in weekdays" :key="`end-${day}`" :label="day" :value="index" />
-                    </el-select>
-                    <el-time-picker v-model="materialEditorEndTime" format="HH:mm" value-format="HH:mm" :clearable="false" aria-label="结束时间" />
-                  </div>
-                </template>
-                <div v-else class="schedule-endpoint">
-                  <span>10:00 至</span>
-                  <el-time-picker v-model="materialEditorReminder.cutoff" format="HH:mm" value-format="HH:mm" :clearable="false" aria-label="每日截止时间" />
+                  <el-radio-group v-model="materialEditorWeekly" aria-label="通知时段设置方式">
+                    <el-radio-button :value="false">当周每天</el-radio-button>
+                    <el-radio-button :value="true">按星期设置</el-radio-button>
+                  </el-radio-group>
                 </div>
-                <div class="schedule-interval-field">
-                  <label for="material-editor-reminder-interval">提醒间隔</label>
-                  <el-input-number id="material-editor-reminder-interval" v-model="materialEditorReminder.intervalMinutes" :min="1" :max="2147483647" :precision="0" class="reminder-interval" />
-                  <span>分钟</span>
+                <div class="reminder-windows">
+                  <div v-for="(window, index) in materialEditorWindows" :key="window.id" class="reminder-window"
+                    :class="{ 'has-weekday': materialEditorWeekly, 'can-remove': materialEditorWindows.length > 1,
+                      'invalid-notice-window': windowTimeErrors[index] }">
+                    <div class="schedule-endpoint">
+                      <span>开始</span>
+                      <el-select v-if="materialEditorWeekly" v-model="window.startDay" :aria-label="`时段 ${index + 1} 开始星期`">
+                        <el-option v-for="(day, dayIndex) in weekdays" :key="day" :label="day" :value="dayIndex" />
+                      </el-select>
+                      <el-time-picker v-model="window.startTime" format="HH:mm" value-format="HH:mm" :clearable="false" :aria-label="`时段 ${index + 1} 开始时间`" />
+                    </div>
+                    <div class="schedule-endpoint">
+                      <span>结束</span>
+                      <el-select v-if="materialEditorWeekly" v-model="window.endDay" :aria-label="`时段 ${index + 1} 结束星期`">
+                        <el-option v-for="(day, dayIndex) in weekdays" :key="day" :label="day" :value="dayIndex" />
+                      </el-select>
+                      <el-time-picker v-model="window.endTime" format="HH:mm" value-format="HH:mm" :clearable="false" :aria-label="`时段 ${index + 1} 结束时间`" />
+                    </div>
+                    <el-button v-if="materialEditorWindows.length > 1" class="remove-notice-window" link type="danger"
+                      :aria-label="`删除时段 ${index + 1}`" @click="materialEditorWindows.splice(index, 1)">删除</el-button>
+                    <small v-if="windowTimeErrors[index]" class="notice-window-error" role="status">{{ windowTimeErrors[index] }}</small>
+                  </div>
+                </div>
+                <div class="notification-period-actions">
+                  <el-button plain type="primary" :icon="Plus" @click="addReminderWindow">添加时段</el-button>
+                  <div class="schedule-interval-field">
+                    <label for="material-editor-reminder-interval">提醒间隔</label>
+                    <el-input-number id="material-editor-reminder-interval" v-model="materialEditorReminder.intervalMinutes" :min="1" :max="2147483647" :precision="0" class="reminder-interval" />
+                    <span>分钟</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -892,11 +949,15 @@ async function remove(entry: Entry | TitleRow | BoardRow) {
             </el-select>
           </el-form-item>
         </template>
-        <div class="editor-actions" :class="{ 'title-editor-actions': isTitleEditor }">
+        <div v-if="editKind !== 'material-type'" class="editor-actions" :class="{ 'title-editor-actions': isTitleEditor }">
           <el-button :disabled="saving" @click="editorOpen = false">{{ canMaintainEditor ? '取消' : '关闭' }}</el-button>
           <el-button v-if="canMaintainEditor" native-type="submit" type="primary" :loading="saving" :disabled="isTitleEditor && recognitionEditor?.loading">保存</el-button>
         </div>
       </el-form>
+      <template v-if="editKind === 'material-type'" #footer>
+        <el-button :disabled="saving" @click="editorOpen = false">{{ canMaintainEditor ? '取消' : '关闭' }}</el-button>
+        <el-button v-if="canMaintainEditor" form="material-type-form" native-type="submit" type="primary" :loading="saving">保存</el-button>
+      </template>
     </el-dialog>
     <PptTitleHandlerReuseDialog v-model="titleHandlerReuseOpen" title="" :existing-ids="new Set(titleForm.handlerUserIds)"
       :saving="saving" :error="titleHandlerReuseError"
@@ -925,16 +986,68 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 @media (max-width: 640px) { .title-handler-editor { grid-template-columns: 1fr; } .title-handler-reuse-button { justify-self: start; } }
 .inline-rule-header { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 10px; padding-top: 14px; border-top: 1px solid #edf1f7; color: #253858; }
 .inline-rule-header > div { display: flex; flex-direction: column; gap: 3px; }
-.inline-rule-header span { color: #8a96a8; font-size: 12px; font-weight: 400; }
+.inline-rule-header span { color: #64748b; font-size: 12px; font-weight: 400; }
 .inline-rule-add { display: grid; grid-template-columns: 118px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
 .inline-rule-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 150px; overflow-y: auto; }
 .inline-rule-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; min-height: 34px; padding: 5px 8px; border: 1px solid #e7ecf4; border-radius: 7px; background: #f8faff; }
 .inline-rule-value { overflow: hidden; color: #2f405e; text-overflow: ellipsis; white-space: nowrap; }
 .inline-rule-scope { color: #7b8799; font-size: 12px; }
-.inline-rule-empty { margin-top: 10px; padding: 10px 12px; border: 1px dashed #d8e0ed; border-radius: 7px; color: #8a96a8; font-size: 12px; text-align: center; background: #fbfcfe; }
-.material-reminder-editor { margin-top: 18px; padding-top: 4px; border-top: 1px solid #edf1f7; }
-.reminder-editor-fields { display: grid; gap: 10px; padding: 0 2px 2px; }
-.reminder-editor-note { color: #7b8799; font-size: 12px; }
+.inline-rule-empty { margin-top: 10px; padding: 8px 12px; border: 1px dashed #d8e0ed; border-radius: 8px; color: #64748b; font-size: 12px; text-align: center; background: #fbfcfe; }
+:global(.material-type-editor.el-dialog .el-dialog__footer) {
+  flex-shrink: 0;
+  padding: 12px var(--ppt-dialog-gutter);
+  border-top: 1px solid #e3eaf4;
+  background: #fff;
+}
+.material-reminder-editor {
+  margin-top: 18px;
+  border: 1px solid #dce6f3;
+  border-radius: 12px;
+  background: #f7faff;
+}
+.notification-heading,
+.notification-period,
+.notification-period-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.notification-heading {
+  padding: 12px 16px;
+  border-bottom: 1px solid #dce6f3;
+  color: #243858;
+}
+.notification-heading > div,
+.notification-period > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.notification-heading span,
+.notification-period small {
+  color: #52647d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.notification-heading :deep(.el-switch) { flex: none; }
+.reminder-editor-fields { display: grid; gap: 12px; padding: 14px 16px; }
+.notification-period { flex-wrap: wrap; color: #243858; }
+.reminder-windows { display: grid; gap: 8px; }
+.reminder-window {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid #dce6f3;
+  border-radius: 8px;
+  background: #fff;
+}
+.reminder-window.can-remove { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+.invalid-notice-window { border-color: var(--el-color-danger-light-5); }
+.notice-window-error { grid-column: 1 / -1; color: var(--el-color-danger-dark-2); font-size: 12px; }
+.notification-period-actions { flex-wrap: wrap; }
 .rule-hint { margin: -4px 0 14px; color: #7b8799; font-size: 13px; line-height: 1.6; }
 .ignore-rule-button { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; font-weight: 600; }
 .ignore-rule-button:hover { background: #eff6ff; }
@@ -947,7 +1060,8 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 .ignore-rule-table :deep(.el-table__header th) { background: #f7f9fc; color: #52627a; font-weight: 700; }
 .ignore-rule-table :deep(.el-table__row:hover > td) { background: #f8fbff; }
 .ignore-rule-delete { font-weight: 600; }
-@media (max-width: 560px) { .inline-rule-add, .rule-add-row { grid-template-columns: 1fr; } .inline-rule-item { grid-template-columns: auto minmax(0, 1fr) auto; } .inline-rule-item .el-button { grid-column: 3; } }
+@media (max-width: 560px) { .rule-add-row { grid-template-columns: 1fr; } .inline-rule-item { grid-template-columns: auto minmax(0, 1fr) auto; } .inline-rule-item .el-button { grid-column: 3; } }
+@media (max-width: 400px) { .inline-rule-add { grid-template-columns: minmax(0, 1fr) auto; } .inline-rule-add :deep(.el-select) { grid-column: 1 / -1; } }
 .el-pagination { margin-top: 10px; justify-content: flex-end; flex-wrap: wrap; }
 .editor-actions { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid #e3eaf4; }
 .title-editor-actions { position: sticky; bottom: -20px; z-index: 1; padding-bottom: 10px; background: var(--el-dialog-bg-color, #fff); }
@@ -1048,14 +1162,25 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
 }
 
 .schedule-endpoint {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
-
-.schedule-endpoint > span { flex: 0 0 auto; }
-.schedule-endpoint :deep(.el-select) { width: 82px; flex: 0 0 82px; }
-.schedule-endpoint :deep(.el-date-editor) { width: 110px; }
+.has-weekday .schedule-endpoint { grid-template-columns: auto 76px minmax(0, 1fr); }
+.schedule-endpoint > span { color: #435673; font-size: 13px; white-space: nowrap; }
+.schedule-endpoint :deep(.el-date-editor),
+.schedule-endpoint :deep(.el-select) { min-width: 0; width: 100%; }
+@media (max-width: 660px) {
+  .reminder-window,
+  .reminder-window.can-remove { grid-template-columns: minmax(0, 1fr); }
+  .remove-notice-window { justify-self: end; }
+}
+@media (max-width: 400px) {
+  .notification-heading,
+  .reminder-editor-fields { padding-inline: 10px; }
+  .has-weekday .schedule-endpoint { grid-template-columns: auto 66px minmax(0, 1fr); }
+}
 
 .schedule-actions {
   display: flex;
@@ -1093,8 +1218,6 @@ h2 { margin: 0 0 14px; font-size: 22px; color: #142441; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid #e8eef7;
 }
 
 .schedule-interval-field > label {

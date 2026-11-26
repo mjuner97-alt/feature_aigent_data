@@ -1,3 +1,5 @@
+import type { SkillFlowExecution, SkillFlowNodeExecution } from '../types/skillFlow';
+
 const TERMINAL_FLOW_STATUSES = new Set(['SUCCESS', 'FAILED', 'PARTIAL_SUCCESS', 'CANCELLED']);
 const RETRYABLE_NODE_STATUSES = new Set(['SUCCESS', 'FAILED', 'CANCELLED', 'BLOCKED']);
 
@@ -22,6 +24,18 @@ export function formatNodeErrorDetails(node: NodeErrorLike): string {
 
 export function canRetryNode(flowStatus: string, nodeStatus: string): boolean {
   return TERMINAL_FLOW_STATUSES.has(flowStatus) && RETRYABLE_NODE_STATUSES.has(nodeStatus);
+}
+
+export function canRetryExecutionNode(execution: SkillFlowExecution, node: SkillFlowNodeExecution): boolean {
+  if (!canRetryNode(execution.status, node.status)) return false;
+  if (execution.triggerType !== 'AUTO_METRIC') return true;
+  return ['FAILED', 'PARTIAL_SUCCESS'].includes(execution.status) && ['FAILED', 'BLOCKED'].includes(node.status);
+}
+
+export function canRetryExecutionSummary(execution?: SkillFlowExecution | null): boolean {
+  if (!execution || execution.reportPath || !['SUCCESS', 'FAILED', 'PARTIAL_SUCCESS'].includes(execution.status)) return false;
+  if (execution.triggerType !== 'AUTO_METRIC') return true;
+  return execution.status !== 'SUCCESS' && !!execution.nodes?.length && execution.nodes.every(node => node.status === 'SUCCESS');
 }
 
 export function shouldShowNodeTimes(attempts?: unknown[]): boolean {

@@ -20,6 +20,7 @@ import com.agentscopea2a.v2.skillManager.notification.NotifyBodyTemplate;
 import com.agentscopea2a.v2.skillManager.report.FlowReportStorage;
 import com.agentscopea2a.v2.skillManager.report.HtmlReportRenderer;
 import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer;
+import com.agentscopea2a.v2.skillManager.report.LongTaskReportRenderer.ReportPart;
 import com.agentscopea2a.v2.skillManager.report.ReportOutlineComposer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
@@ -170,7 +171,7 @@ public class FlowCompletionService {
     /** 按节点配置顺序拼接结果并生成 HTML 报告，不调用汇总模型。 */
     public Summary summarize(SkillFlowExecution flow, List<SkillFlowNodeExecution> nodes) {
         try {
-            String text = orderedReportText(flow, nodes);
+            List<ReportPart> reportParts = orderedReportParts(flow, nodes);
             flow.setRenderedSummaryQuestion(null);
             mapper.updateExecution(flow);
             List<Map<String, String>> results = nodes
@@ -194,7 +195,7 @@ public class FlowCompletionService {
                 .toList();
             try {
                 String renderedReport = renderer.renderWithoutFullscreen(
-                    text,
+                    reportParts,
                     flow.getBatchId() == null
                         ? Objects.toString(flow.getFlowName(), "长任务报告")
                         : FlowReportNaming.datedTitle(flow.getFlowName(), flow)
@@ -203,7 +204,7 @@ public class FlowCompletionService {
                 log.info("Long task HTML report saved: executionId={}, reportPath={}", flow.getId(), reportPath);
                 return new Summary(json.writeValueAsString(Map.of("results", results)), reportPath);
             } catch (FlowReportStorage.ReportStorageException e) {
-                // 报告属于收尾附件，磁盘不足不能反向把已经成功的节点和流程改成失败。
+                // 保留已经成功的节点和汇总数据，由调用方根据触发方式决定执行状态。
                 // 节点结果仍保存在 summaryJson，释放空间后可通过“重新生成汇总”补建报告。
                 log.error(
                     "Flow report persistence failed: code={}, flowId={}, reason={}",
@@ -228,18 +229,18 @@ public class FlowCompletionService {
         }
     }
 
-    private String orderedReportText(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
+    private List<ReportPart> orderedReportParts(SkillFlowExecution execution, List<SkillFlowNodeExecution> nodes) {
         if (
             execution != null &&
             execution.getReportOutlineSnapshot() != null &&
             !execution.getReportOutlineSnapshot().isBlank()
         ) {
-            String composed = outlineComposer.compose(
+            List<ReportPart> composed = outlineComposer.compose(
                 execution.getReportOutlineSnapshot(),
                 nodes,
                 execution.getBatchId() == null ? null : FlowReportNaming.datedTitle(execution.getFlowName(), execution)
             );
-            if (composed != null && !composed.isBlank()) return composed;
+            if (composed != null) return composed;
         }
         // Definitions are read lazily so old executions (and old rows without an
         // outline) retain the exact legacy summary behavior.
@@ -251,31 +252,26 @@ public class FlowCompletionService {
                     definition.getReportOutline() != null &&
                     !definition.getReportOutline().isBlank()
                 ) {
-                    String composed = outlineComposer.compose(definition.getReportOutline(), nodes);
-                    if (composed != null && !composed.isBlank()) return composed;
+                    List<ReportPart> composed = outlineComposer.compose(definition.getReportOutline(), nodes);
+                    if (composed != null) return composed;
                 }
             } catch (RuntimeException ignored) {
                 log.warn("Invalid report outline for flow {}, falling back to legacy summary", execution.getFlowId());
             }
         }
-        StringBuilder report = new StringBuilder();
+        List<ReportPart> report = new ArrayList<>();
         for (int index = 0; index < nodes.size(); index++) {
             SkillFlowNodeExecution node = nodes.get(index);
             if (SHOW_NODE_NAMES_IN_LEGACY_REPORT) {
-                report
-                    .append("## ")
-                    .append(chineseNumber(index + 1))
-                    .append("、")
-                    .append(
-                        node.getNodeName() == null || node.getNodeName().isBlank()
-                            ? Objects.toString(node.getSkillName(), node.getNodeKey())
-                            : node.getNodeName()
-                    )
-                    .append('\n');
+                String nodeName = node.getNodeName() == null || node.getNodeName().isBlank()
+                    ? Objects.toString(node.getSkillName(), node.getNodeKey())
+                    : node.getNodeName();
+                report.add(ReportPart.heading("## " + chineseNumber(index + 1) + "、" + nodeName));
             }
-            report.append(extractResultText(node.getResultJson())).append("\n\n");
+            String content = extractResultText(node.getResultJson());
+            if (!content.isBlank()) report.add(ReportPart.node(content));
         }
-        return report.toString();
+        return report;
     }
 
     /** 序号转中文数字(一、二、…、十、十一、…、九十九),报告标题编号用;超出范围回退阿拉伯数字。 */
@@ -302,13 +298,19 @@ public class FlowCompletionService {
     /**
      * 执行完成后的首次通知:所有触发类型均遵守执行快照中的完成通知开关。
      * CHAT 通知对话触发人, MANUAL 通知点击执行的人, AUTO_METRIC 通知流程创建人
-     * （三类场景的接收人均已在 triggerUserId 中快照）。deliveryKey 固定为
-     * flow:{id}:INITIAL,借唯一索引天然幂等(复用执行记录或重试均不重复通知)。
+     * （三类场景的接收人均已在 triggerUserId 中快照）。自动执行的成功报告与失败告警使用独立的幂等键，
+     * 失败后重跑成功可发送一次正式报告。
      */
     public void sendInitial(SkillFlowExecution execution) {
         if (execution.getStatus() == FlowExecutionStatus.CANCELLED) return;
         if (Boolean.FALSE.equals(execution.getNotifyEnabledSnapshot())) return;
-        send(execution, "flow:" + execution.getId() + ":INITIAL");
+        boolean automatic = execution.getTriggerType() == FlowTriggerType.AUTO_METRIC;
+        boolean automaticSuccess = automatic && execution.getStatus() == FlowExecutionStatus.SUCCESS;
+        String key = "flow:" + execution.getId() + (automaticSuccess ? ":INITIAL:SUCCESS" : ":INITIAL");
+        if (automatic && mapper.selectNotifications(execution.getId()).stream().anyMatch(n -> key.equals(n.getDeliveryKey()))) {
+            return;
+        }
+        send(execution, key);
     }
 
     /** 手动重发通知:仅终态(且非取消)的执行可用。 */

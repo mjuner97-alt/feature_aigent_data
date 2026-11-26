@@ -25,7 +25,8 @@
         COALESCE(c.reminder_cutoff,d.cutoff,'18:00') AS cutoff,
         COALESCE(c.reminder_interval_minutes,d.interval_minutes,60) AS interval_minutes,
         c.reminder_weekly_start_minute AS weekly_start_minute,
-        c.reminder_weekly_end_minute AS weekly_end_minute
+        c.reminder_weekly_end_minute AS weekly_end_minute,
+        c.notification_enabled
     </sql>
     <select id="feedbackReminderSettings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackReminderSettings">
         SELECT <include refid="effectiveReminderSettings"/>
@@ -42,13 +43,74 @@
     </select>
     <update id="updateFeedbackReminderSettings">
         UPDATE digital_qa_ppt_keyword_config
-        SET reminder_enabled=#{settings.enabled}, reminder_cutoff=#{settings.cutoff},
+        SET reminder_enabled=<choose><when test="settings.enabled">TRUE</when><otherwise>FALSE</otherwise></choose>,
+            reminder_cutoff=#{settings.cutoff},
             reminder_interval_minutes=#{settings.intervalMinutes},
             reminder_weekly_start_minute=#{settings.weeklyStartMinute,jdbcType=INTEGER},
             reminder_weekly_end_minute=#{settings.weeklyEndMinute,jdbcType=INTEGER},
+            <if test="settings.notificationEnabled != null">
+                notification_enabled=<choose><when test="settings.notificationEnabled">TRUE</when><otherwise>FALSE</otherwise></choose>,
+            </if>
             updated_at=CURRENT_TIMESTAMP
         WHERE id=#{id} AND kind='material-type'
     </update>
+    <update id="updateNotificationSwitches">
+        UPDATE digital_qa_ppt_keyword_config
+        SET
+            <if test="enabled != null">
+                reminder_enabled=<choose><when test="enabled">TRUE</when><otherwise>FALSE</otherwise></choose>,
+            </if>
+            <if test="notificationEnabled != null">
+                notification_enabled=<choose><when test="notificationEnabled">TRUE</when><otherwise>FALSE</otherwise></choose>,
+            </if>
+            updated_at=CURRENT_TIMESTAMP
+        WHERE id=#{id} AND kind='material-type'
+    </update>
+    <select id="materialTypeConfigId" resultType="long">
+        SELECT id FROM digital_qa_ppt_keyword_config WHERE kind='material-type' AND name=#{name}
+    </select>
+    <select id="lockMaterialTypeName" resultType="string">
+        SELECT name FROM digital_qa_ppt_keyword_config WHERE kind='material-type' AND id=#{id} FOR UPDATE
+    </select>
+    <update id="renameBatchMaterialType">
+        UPDATE digital_qa_ppt_material_batch SET material_type=#{name} WHERE material_type=#{previousName}
+    </update>
+    <select id="materialReminderWindows" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$MaterialReminderWindow">
+        SELECT config_id,daily,start_minute,end_minute FROM digital_qa_ppt_reminder_window WHERE config_id IN
+        <foreach collection="ids" item="id" open="(" close=")" separator=",">#{id}</foreach>
+        ORDER BY config_id,start_minute,end_minute
+    </select>
+    <delete id="deleteReminderWindows">
+        DELETE FROM digital_qa_ppt_reminder_window WHERE config_id=#{id}
+    </delete>
+    <insert id="insertReminderWindows">
+        INSERT INTO digital_qa_ppt_reminder_window(config_id,daily,start_minute,end_minute) VALUES
+        <foreach collection="windows" item="window" separator=",">
+            (#{id},<choose><when test="window.daily">TRUE</when><otherwise>FALSE</otherwise></choose>,
+                #{window.startMinute},#{window.endMinute})
+        </foreach>
+    </insert>
+    <sql id="uploadedInCurrentWeek">
+        v.uploaded_at &gt;= DATE_TRUNC('week', CAST(#{now} AS TIMESTAMP))
+        AND v.uploaded_at &lt; DATE_TRUNC('week', CAST(#{now} AS TIMESTAMP)) + INTERVAL '7 days'
+    </sql>
+    <sql id="notificationEnabledThisWeek">
+        COALESCE(c.notification_enabled,TRUE)=TRUE AND <include refid="uploadedInCurrentWeek"/>
+    </sql>
+    <select id="materialNotificationsEnabledThisWeek" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_material_version v
+            <include refid="feedbackReminderSettingsJoin"/>
+            WHERE v.id=#{versionId} AND <include refid="notificationEnabledThisWeek"/>
+        )
+    </select>
+    <select id="materialNotificationsAllowed" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_material_version v
+            <include refid="feedbackReminderSettingsJoin"/>
+            WHERE v.id=#{versionId} AND <include refid="notificationAllowedNow"/>
+        )
+    </select>
     <sql id="feedbackReminderSettingsJoin">
         JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
         LEFT JOIN digital_qa_ppt_keyword_config c ON c.kind='material-type' AND c.name=b.material_type
@@ -57,20 +119,42 @@
     <sql id="feedbackReminderInterval">
         COALESCE(c.reminder_interval_minutes,d.interval_minutes,60) * INTERVAL '1 minute'
     </sql>
+    <sql id="reminderWindowMinute">
+        (CASE WHEN w.daily THEN MOD(CAST(#{weekMinute} AS INTEGER),1440) ELSE #{weekMinute} END)
+    </sql>
+    <sql id="notificationAllowedNow">
+        <include refid="notificationEnabledThisWeek"/>
+        AND (
+            EXISTS (
+                SELECT 1 FROM digital_qa_ppt_reminder_window w WHERE w.config_id=c.id
+                AND (
+                    (w.start_minute &lt; w.end_minute
+                        AND <include refid="reminderWindowMinute"/> &gt;= w.start_minute
+                        AND <include refid="reminderWindowMinute"/> &lt; w.end_minute)
+                    OR (w.start_minute &gt; w.end_minute
+                        AND (<include refid="reminderWindowMinute"/> &gt;= w.start_minute
+                            OR (w.daily AND <include refid="reminderWindowMinute"/> &lt; w.end_minute)))
+                )
+            )
+            OR (
+                NOT EXISTS (SELECT 1 FROM digital_qa_ppt_reminder_window w WHERE w.config_id=c.id)
+                AND (
+                    (c.reminder_weekly_start_minute IS NULL
+                        AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &gt;= '10:00'
+                        AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &lt; COALESCE(c.reminder_cutoff,d.cutoff,'18:00'))
+                    OR (c.reminder_weekly_start_minute &lt; c.reminder_weekly_end_minute
+                        AND #{weekMinute} &gt;= c.reminder_weekly_start_minute
+                        AND #{weekMinute} &lt; c.reminder_weekly_end_minute)
+                    OR (c.reminder_weekly_start_minute &gt; c.reminder_weekly_end_minute
+                        AND #{weekMinute} &gt;= c.reminder_weekly_start_minute)
+                )
+            )
+        )
+    </sql>
     <sql id="dueFeedbackReminder">
         f.status='PENDING_FEEDBACK'
+        AND <include refid="notificationAllowedNow"/>
         AND COALESCE(c.reminder_enabled,d.enabled,TRUE)=TRUE
-        AND (
-            (c.reminder_weekly_start_minute IS NULL
-                AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &gt;= '10:00'
-                AND TO_CHAR(CAST(#{now} AS TIMESTAMP), 'HH24:MI') &lt; COALESCE(c.reminder_cutoff,d.cutoff,'18:00'))
-            OR (c.reminder_weekly_start_minute &lt; c.reminder_weekly_end_minute
-                AND #{weekMinute} &gt;= c.reminder_weekly_start_minute
-                AND #{weekMinute} &lt; c.reminder_weekly_end_minute)
-            OR (c.reminder_weekly_start_minute &gt; c.reminder_weekly_end_minute
-                AND (#{weekMinute} &gt;= c.reminder_weekly_start_minute
-                    OR #{weekMinute} &lt; c.reminder_weekly_end_minute))
-        )
         AND f.first_feedback_notified_at &lt;= CAST(#{now} AS TIMESTAMP) - <include refid="feedbackReminderInterval"/>
         AND (f.last_feedback_reminded_at IS NULL OR
              f.last_feedback_reminded_at &lt;= CAST(#{now} AS TIMESTAMP) - <include refid="feedbackReminderInterval"/>)
@@ -129,7 +213,10 @@
                n.previous_department,n.previous_handlers
         FROM digital_qa_ppt_assignment_notice n
         JOIN digital_qa_ppt_finding f ON f.id=n.finding_id
+        JOIN digital_qa_ppt_material_version v ON v.id=n.version_id
+        <include refid="feedbackReminderSettingsJoin"/>
         WHERE n.status IN ('PENDING','FAILED')
+          AND <include refid="notificationAllowedNow"/>
           AND (n.attempted_at IS NULL OR n.attempted_at &lt; CURRENT_TIMESTAMP - INTERVAL '1 minute')
         ORDER BY n.created_at LIMIT 100
     </select>
@@ -166,34 +253,39 @@
         SELECT file_name, version_no, version_name FROM digital_qa_ppt_material_version WHERE id=#{versionId}
     </select>
 
-    <select id="feedbackNotices" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNotice">
-        WITH candidates AS (
-            SELECT v.id AS version_id, f.id AS finding_id, handler.user_id AS recipient,
-                   'PENDING' AS kind, f.title, v.id AS link_version, v.version_no, f.feedback_department AS department,
-                   s.page_no, f.anomaly_keyword, f.assignment_revision
-            FROM digital_qa_ppt_material_version v
-            JOIN digital_qa_ppt_finding f ON f.version_id=v.id AND f.status &lt;&gt; 'DELETED'
-            JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
-            JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
-            WHERE v.status='ANALYZED' AND f.status='PENDING_FEEDBACK'
-              AND NOT EXISTS (SELECT 1 FROM digital_qa_ppt_assignment_change changed WHERE changed.finding_id=f.id)
-              AND (NOT EXISTS (
-                  SELECT 1 FROM digital_qa_ppt_material_version newer
-                  WHERE newer.batch_id=v.batch_id AND newer.version_no &gt; v.version_no
-                    AND newer.status='ANALYZED'
-              ) OR EXISTS (SELECT 1 FROM digital_qa_ppt_assignment_change change WHERE change.finding_id=f.id))
-
+    <sql id="initialNoticeSource">
+        FROM digital_qa_ppt_material_version v
+        JOIN digital_qa_ppt_finding f ON f.version_id=v.id
+        JOIN digital_qa_ppt_finding_recipient handler ON handler.finding_id=f.id
+        JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+    </sql>
+    <sql id="initialNoticePending">
+        v.status='ANALYZED' AND f.status='PENDING_FEEDBACK' AND handler.user_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM digital_qa_ppt_assignment_change changed WHERE changed.finding_id=f.id)
+        AND NOT EXISTS (
+            SELECT 1 FROM digital_qa_ppt_material_version newer
+            WHERE newer.batch_id=v.batch_id AND newer.version_no &gt; v.version_no AND newer.status='ANALYZED'
         )
-        SELECT c.version_id,c.finding_id,c.recipient,c.kind,c.title,c.link_version,c.version_no,c.department,
-               c.page_no AS page,c.anomaly_keyword AS keyword,c.assignment_revision
-        FROM candidates c
-        WHERE c.recipient IS NOT NULL AND NOT EXISTS (
+        AND NOT EXISTS (
             SELECT 1 FROM digital_qa_ppt_feedback_notice n
-            WHERE n.version_id=c.version_id AND n.finding_id=c.finding_id
-              AND n.recipient=c.recipient AND n.kind=c.kind AND n.assignment_revision=c.assignment_revision
+            WHERE n.version_id=v.id AND n.finding_id=f.id AND n.recipient=handler.user_id
+              AND n.kind='PENDING' AND n.assignment_revision=f.assignment_revision
         )
-        AND c.version_id=#{versionId}
-        ORDER BY c.version_id,c.finding_id,c.kind
+    </sql>
+    <select id="pendingInitialNoticeVersions" resultType="long">
+        SELECT DISTINCT v.id
+        <include refid="initialNoticeSource"/>
+        <include refid="feedbackReminderSettingsJoin"/>
+        WHERE <include refid="initialNoticePending"/> AND <include refid="notificationAllowedNow"/>
+        ORDER BY v.id
+    </select>
+    <select id="feedbackNotices" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FeedbackNotice">
+        SELECT v.id AS version_id, f.id AS finding_id, handler.user_id AS recipient,
+               'PENDING' AS kind, f.title, v.id AS link_version, v.version_no, f.feedback_department AS department,
+               s.page_no AS page, f.anomaly_keyword AS keyword, f.assignment_revision
+        <include refid="initialNoticeSource"/>
+        WHERE v.id=#{versionId} AND <include refid="initialNoticePending"/>
+        ORDER BY f.id
     </select>
 
     <!-- 幂等登记事项与接收人的通知记录，并校验待反馈状态及当前经办关系。 -->
@@ -280,8 +372,11 @@
         )
     </insert>
     <select id="pendingCompletionReports" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$CompletionReport">
-        SELECT id,version_id,department FROM digital_qa_ppt_mail_record
-        WHERE status='PENDING_REPORT' ORDER BY id
+        SELECT m.id,m.version_id,m.department FROM digital_qa_ppt_mail_record m
+        JOIN digital_qa_ppt_material_version v ON v.id=m.version_id
+        <include refid="feedbackReminderSettingsJoin"/>
+        WHERE m.status='PENDING_REPORT' AND <include refid="notificationAllowedNow"/>
+        ORDER BY m.id
     </select>
     <select id="completionReportPending" resultType="boolean">
         SELECT EXISTS (SELECT 1 FROM digital_qa_ppt_mail_record WHERE id=#{id} AND status='PENDING_REPORT')
@@ -348,8 +443,8 @@
                ) END AS feedback_at
         FROM digital_qa_ppt_material_version v
         JOIN digital_qa_ppt_material_batch b ON b.id=v.batch_id
-        LEFT JOIN recipients r ON r.version_id=v.id
-        LEFT JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
+        JOIN recipients r ON r.version_id=v.id
+        JOIN digital_qa_ppt_finding f ON f.id=r.finding_id
         LEFT JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
         LEFT JOIN digital_qa_ppt_finding_recipient assigned ON assigned.finding_id=f.id AND assigned.user_id=r.recipient
         <if test="notices">
@@ -476,7 +571,8 @@
 
     <!-- 保存材料版本元数据及原件相对存储路径，并回填版本主键。 -->
     <insert id="createVersion" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
-        INSERT INTO digital_qa_ppt_material_version(batch_id,version_no,version_name,file_name,file_path,file_sha256,uploaded_by) VALUES (#{batch},#{number},#{name},#{file},#{path},#{hash},#{user})
+        INSERT INTO digital_qa_ppt_material_version(batch_id,version_no,version_name,file_name,file_path,file_sha256,uploaded_by,uploaded_at)
+        VALUES (#{batch},#{number},#{name},#{file},#{path},#{hash},#{user},#{uploadedAt})
     </insert>
 
     <!-- 按版本号倒序查询批次中的材料版本。 -->
@@ -686,6 +782,13 @@
         DELETE FROM digital_qa_ppt_finding_handler WHERE finding_id=#{id}
     </delete>
 
+    <!-- 清除旧版单人负责人记录，并将补齐经办人的事项转为待反馈。 -->
+    <update id="prepareFindingHandlerChange">
+        UPDATE digital_qa_ppt_finding
+        SET owner_user_id=NULL, status=CASE WHEN status='UNASSIGNED' THEN 'PENDING_FEEDBACK' ELSE status END
+        WHERE id=#{id}
+    </update>
+
     <update id="updateFindingAssignment">
         UPDATE digital_qa_ppt_finding
         SET feedback_department=#{department},auto_departments=#{departments},assignment_revision=#{revision},
@@ -759,8 +862,24 @@
     </select>
 
     <!-- 按识别序号查询指定版本的事项。 -->
+    <sql id="versionFindings">
+        SELECT f.id,f.sequence_no,s.page_no,f.title,f.chapter,f.source_text,f.anomaly_keyword,
+               f.auto_departments,f.owner_user_id,f.status,f.version_relation
+        FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id
+        WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED'
+    </sql>
+
     <select id="findings" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingRow">
-        SELECT f.id,f.sequence_no,s.page_no,f.title,f.chapter,f.source_text,f.anomaly_keyword,f.auto_departments,f.owner_user_id,f.status,f.version_relation FROM digital_qa_ppt_finding f JOIN digital_qa_ppt_slide s ON s.id=f.slide_id WHERE f.version_id=#{id} AND f.status &lt;&gt; 'DELETED' ORDER BY f.sequence_no
+        <include refid="versionFindings"/> ORDER BY f.sequence_no
+    </select>
+
+    <select id="findingsOnPage" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingRow">
+        <include refid="versionFindings"/> AND s.page_no=#{page}
+    </select>
+
+    <select id="findingDepartmentStatuses" resultType="com.agentscopea2a.mapper.gauss.PptAnomalyMapper$FindingDepartmentStatus">
+        SELECT auto_departments AS departments, status FROM digital_qa_ppt_finding
+        WHERE version_id=#{id} AND status &lt;&gt; 'DELETED'
     </select>
 
     <!-- 读取指定版本和页码的页面元数据。 -->
@@ -1058,6 +1177,13 @@
         SELECT f.id FROM digital_qa_ppt_finding f
         JOIN digital_qa_ppt_finding_recipient h ON h.finding_id=f.id
         WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND h.user_id=#{user}
+    </select>
+    <!-- 查询当前经办人在同一版本中受分派事项的责任部门。 -->
+    <select id="recipientFindingDepartments" resultType="string">
+        SELECT DISTINCT f.auto_departments FROM digital_qa_ppt_finding f
+        JOIN digital_qa_ppt_finding_recipient h ON h.finding_id=f.id
+        WHERE f.version_id=#{version} AND f.status &lt;&gt; 'DELETED' AND h.user_id=#{user}
+          AND f.auto_departments IS NOT NULL
     </select>
     <!-- 判断用户是否属于当前事项的反馈接收人。 -->
     <select id="isFindingRecipient" resultType="boolean">

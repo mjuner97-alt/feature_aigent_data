@@ -1,9 +1,11 @@
 package com.agentscopea2a.v2.skillManager.service;
 
+import com.agentscopea2a.v2.skillManager.entity.FlowExecutionStatus;
 import com.agentscopea2a.v2.skillManager.entity.FlowNodeExecutionStatus;
 import com.agentscopea2a.v2.skillManager.entity.SkillFlowNodeExecution;
 import com.agentscopea2a.v2.skillManager.mapper.SkillFlowMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
@@ -17,6 +19,7 @@ public class NodeAttemptCompletionService {
         this.mapper = mapper;
     }
 
+    @Transactional("gaussCustomerTransactionManager")
     public boolean completeSuccess(SkillFlowNodeExecution node, int attempt, String leaseOwner,
                                    String resultJson, LocalDateTime completedAt) {
         node.setStatus(FlowNodeExecutionStatus.SUCCESS);
@@ -25,10 +28,10 @@ public class NodeAttemptCompletionService {
         node.setErrorMessage(null);
         node.setNextRunAt(null);
         node.setCompletedAt(completedAt);
-        clearLease(node);
-        return mapper.completeNodeAttempt(node, attempt, leaseOwner) == 1;
+        return complete(node, attempt, leaseOwner, completedAt);
     }
 
+    @Transactional("gaussCustomerTransactionManager")
     public boolean completeFailure(SkillFlowNodeExecution node, int attempt, String leaseOwner,
                                    boolean retryable, String errorCode, String errorMessage,
                                    LocalDateTime completedAt) {
@@ -36,6 +39,21 @@ public class NodeAttemptCompletionService {
         node.setErrorMessage(errorMessage);
         node.setStatus(retryable ? FlowNodeExecutionStatus.RETRY_WAIT : FlowNodeExecutionStatus.FAILED);
         node.setCompletedAt(retryable ? null : completedAt);
+        return complete(node, attempt, leaseOwner, completedAt);
+    }
+
+    private boolean complete(SkillFlowNodeExecution node, int attempt, String leaseOwner, LocalDateTime completedAt) {
+        var execution = mapper.selectFlowExecutionForUpdate(node.getFlowExecutionId());
+        if (execution == null) return false;
+        if (execution.getStatus() == FlowExecutionStatus.CANCEL_REQUESTED ||
+            execution.getStatus() == FlowExecutionStatus.CANCELLED) {
+            node.setStatus(FlowNodeExecutionStatus.CANCELLED);
+            node.setResultJson(null);
+            node.setErrorCode(null);
+            node.setErrorMessage(null);
+            node.setNextRunAt(null);
+            node.setCompletedAt(completedAt);
+        }
         clearLease(node);
         return mapper.completeNodeAttempt(node, attempt, leaseOwner) == 1;
     }
